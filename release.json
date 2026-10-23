@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "classification": "engineering-test-keys",
+  "hardware_qualified": false,
+  "nvidia": {
+    "version": "39.2.1",
+    "source": "https://developer.nvidia.com/embedded/jetpack/downloads/archive-7.2.1",
+    "archive": {
+      "name": "Jetson_Linux_R39.2.1_aarch64.tbz2",
+      "size": 1287223769,
+      "sha256": "2e5619088ba88e85dab25247f033d70659b6f676ff835176a07766dcb0fdbe6b",
+      "url": "https://developer.nvidia.com/downloads/embedded/L4T/r39_Release_v2.1/release/Jetson_Linux_R39.2.1_aarch64.tbz2"
+    },
+    "sample_rootfs": {
+      "name": "Tegra_Linux_Sample-Root-Filesystem_R39.2.1_aarch64.tbz2",
+      "url": "https://developer.nvidia.com/downloads/embedded/L4T/r39_Release_v2.1/release/Tegra_Linux_Sample-Root-Filesystem_R39.2.1_aarch64.tbz2",
+      "size": 2022864741,
+      "sha256": "58a6485b56c6d6b5ee8478e902eed0ed4984fd73135b88b76aeaa5c1f44be66e",
+      "nvidia_sha1": "9a991a4f94b09304d10a73c89da7d5feae11c303"
+    }
+  },
+  "boards": {
+    "thor": {
+      "module": "3834-0008",
+      "carrier": "4071-0000",
+      "vendor_board": "jetson-agx-thor-devkit",
+      "image": {
+        "name": "admiral-jetson-agx-thor.img",
+        "size": 3699412992,
+        "sha256": "f7bb5d82a1990e3c13b87f995c382a85db777ebeac99a51cb896380fdb728b60"
+      },
+      "download_url": null
+    },
+    "orin": {
+      "module": "3701-0000",
+      "carrier": "3737-0000",
+      "vendor_board": "jetson-agx-orin-devkit",
+      "image": {
+        "name": "admiral-jetson-agx-orin.img",
+        "size": 3699412992,
+        "sha256": "5926f68cff407df2cbc32ae8768fde503152544ebfc71c0c82c8ef437a263711"
+      },
+      "download_url": null
+    },
+    "orin-nx": {
+      "module": "3767-0000",
+      "carrier": "3768-0000",
+      "vendor_board": "jetson-orin-nano-devkit-super",
+      "image": {
+        "name": "admiral-orin-nx.img",
+        "size": 3699412992,
+        "sha256": "ff1110f5bfdd06bf252722de2990f9c0d1b70c7ec4ebfede7ea1332c5a786b74"
+      },
+      "download_url": null
+    }
+  }
+}

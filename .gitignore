@@ -1,0 +1,22 @@
+# Generated archives, helper binaries and test caches
+/dist/
+/downloads/
+/cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.tar.gz
+*.tar.gz.sha256
+*.helper
+/recovery-io
+
+# Private inputs and execution workspaces
+/keys/
+/private/
+/sessions/
+*.key
+*.pem
+*.img
+*.tbz2
+*.log
+.DS_Store
