@@ -9,12 +9,21 @@ from pathlib import Path
 import subprocess
 import tarfile
 
-FILES = tuple(sorted(("LICENSE OPENSSL-LICENSE.txt MUSL-COPYRIGHT.txt test_support.py test_firsttest.py README.md install.py image.py recovery-write.sh release.json "
-    "test_installer.py test_integration.py transport.py vendor.py writer.py flow.py "
-    "fingerprint.py package.py security.py test_security.py "
-    "recovery-io.c test_recovery_io.c workspace.py native_session.py "
-    "test_execution.py test_native_session.c NATIVE-PROTOCOL.md adb_socket.py "
-    "test_binary_transport.py native_pipe_fixture.c firmware.py firmware_guard.py test_firmware.py download.py test_download.py test_namespace.py native_namespace_fixture.c test_adb_v2.py thor.py test_guided.py orin.py orin_firmware.py orin_recovery.py orin_payload.py test_orin_payload.py test_orin_probe.py test_orin_flow.py test_orin_oracle.py test_orin_signed_cfg.py orin_native_fixture.c test_orin.py").split()))
+FILES = tuple(sorted(("LICENSE OPENSSL-LICENSE.txt MUSL-COPYRIGHT.txt README.md install.py "
+    "recovery-write.sh release.json package.py recovery-io.c test_recovery_io.c "
+    "test_native_session.c NATIVE-PROTOCOL.md native_pipe_fixture.c "
+    "native_namespace_fixture.c thor.py orin.py orin_native_fixture.c "
+    "docs/reference.md docs/development.md docs/troubleshooting.md").split() +
+    ['nvidia_flash_tools/' + name + '.py' for name in (
+        '__init__', 'adb_socket', 'download', 'fingerprint', 'firmware', 'firmware_guard',
+        'flow', 'image', 'install', 'native_session', 'orin', 'orin_firmware', 'orin_payload',
+        'orin_recovery', 'security', 'thor', 'transport', 'vendor', 'workspace', 'writer')] +
+    ['tests/' + name + '.py' for name in (
+        '__init__', 'test_support', 'test_firsttest', 'test_installer', 'test_integration',
+        'test_security', 'test_execution', 'test_binary_transport', 'test_firmware',
+        'test_download', 'test_namespace', 'test_adb_v2', 'test_guided', 'test_orin_payload',
+        'test_orin_probe', 'test_orin_flow', 'test_orin_oracle', 'test_orin_signed_cfg',
+        'test_orin', 'test_layout')]))
 
 def sha(data):
     return hashlib.sha256(data).hexdigest()
