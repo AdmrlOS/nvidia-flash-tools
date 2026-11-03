@@ -1,0 +1,22 @@
+Seeed J401: stop MB2 from reading the carrier-board EEPROM.
+
+Seeed's Linux_for_Tegra (r39.2.0) sets cvb_eeprom_read_size to 0 in
+bootloader/tegra234-mb2-bct-common.dtsi for its J401 images. This is the whole
+delta; the file is otherwise identical to NVIDIA R39.2.0 and R39.2.1. Seeed
+gives no reason; the J401 schematic shows an AT24C02 board-ID EEPROM on I2C2
+rather than NVIDIA's developer-kit carrier EEPROM at 0xAC (our inference).
+
+Apply from the root of an NVIDIA R39.2.1 Linux_for_Tegra with `patch -p1`.
+flash-qspi.sh does this and checks the file's sha256 before and after.
+
+--- a/bootloader/tegra234-mb2-bct-common.dtsi
++++ b/bootloader/tegra234-mb2-bct-common.dtsi
+@@ -57,7 +57,7 @@
+             cvm_eeprom_read_size = <0x100>;
+             cvb_eeprom_i2c_instance = <0x0>;
+             cvb_eeprom_i2c_slave_address = <0xac>;
+-            cvb_eeprom_read_size = <0x100>;
++            cvb_eeprom_read_size = <0>;
+         };
+ 
+         fsi_vmon_data {

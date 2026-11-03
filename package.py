@@ -14,16 +14,24 @@ FILES = tuple(sorted(("LICENSE OPENSSL-LICENSE.txt MUSL-COPYRIGHT.txt README.md 
     "test_native_session.c NATIVE-PROTOCOL.md native_pipe_fixture.c "
     "native_namespace_fixture.c thor.py orin.py orin_native_fixture.c "
     "docs/reference.md docs/development.md docs/troubleshooting.md").split() +
+    ['vendor-inputs/recomputer-j40/' + name for name in (
+        'README.md', 'recomputer-j40-qspi.conf', 'recomputer-j40-recovery.conf', 'sample-rootfs-members.txt',
+        'patches/0001-mb2-bct-skip-carrier-eeprom-read.patch',
+        'dtb/tegra234-j401-p3768-0000+p3767-0000-recomputer.dtb',
+        'dtb/tegra234-j401-p3768-0000+p3767-0001-recomputer.dtb',
+        'dtb/tegra234-j401-p3768-0000+p3767-0003-recomputer.dtb',
+        'dtb/tegra234-j401-p3768-0000+p3767-0004-recomputer.dtb',
+        'dtbo/tegra234-p3767-camera-p3768-imx219-dual-seeed.dtbo')] +
     ['nvidia_flash_tools/' + name + '.py' for name in (
         '__init__', 'adb_socket', 'download', 'fingerprint', 'firmware', 'firmware_guard',
-        'flow', 'image', 'install', 'native_session', 'orin', 'orin_firmware', 'orin_payload',
-        'orin_recovery', 'security', 'thor', 'transport', 'vendor', 'workspace', 'writer')] +
+        'carrier', 'flow', 'image', 'install', 'native_session', 'orin', 'orin_firmware', 'orin_payload',
+        'orin_recovery', 'security', 'thor', 'transport', 'vendor', 'vendor_inputs', 'workspace', 'writer')] +
     ['tests/' + name + '.py' for name in (
         '__init__', 'test_support', 'test_firsttest', 'test_installer', 'test_integration',
         'test_security', 'test_execution', 'test_binary_transport', 'test_firmware',
         'test_download', 'test_namespace', 'test_adb_v2', 'test_guided', 'test_orin_payload',
         'test_orin_probe', 'test_orin_flow', 'test_orin_oracle', 'test_orin_signed_cfg',
-        'test_orin', 'test_layout')]))
+        'test_orin', 'test_orin_j40', 'test_layout')]))
 
 def sha(data):
     return hashlib.sha256(data).hexdigest()

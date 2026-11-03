@@ -29,6 +29,7 @@ class OrinProbeTests(unittest.TestCase):
         if argv[0] == './flash.sh':
             self.assertIn('--no-flash',argv);self.assertIn('--read-info',argv)
             (self.tree/'bootloader/readinfocmd.txt').write_text('rm cvm.bin;\n./tegraflash.py --chip "0x23 9" --cmd "readfuses fuse_t234.bin read.xml; dump eeprom cvm cvm.bin; dump try_custinfo custinfo_out.bin; reboot recovery";\n')
+            if getattr(self,'readinfo',None): return subprocess.CompletedProcess(argv,*self.readinfo)
         elif argv[0] == '/usr/bin/python3':
             self.assertEqual(argv[-2:],['--instance','1-2'])
             sequence = [shlex.split(p) for p in argv[argv.index('--cmd')+1].split(';')]
@@ -65,6 +66,16 @@ class OrinProbeTests(unittest.TestCase):
         self.workspace.expected=snapshot(self.tree,os.geteuid())
         self.bad='missing'
         with self.assertRaises(FileNotFoundError):self.probe()
+
+    def test_readinfo_chip_info_exit_tolerated_other_failures_refused(self):
+        # R39.2.1 flash.sh exits 1 after writing readinfocmd.txt when no
+        # chip_info.bin_bak exists yet, which is every fresh probe.
+        self.readinfo=(1,b'Saving readinfo command\nParsing chip_info.bin information failed.\n')
+        self.assertEqual(self.probe()['carrier'],'3737-0000');self.workspace.validate()
+        for rc,out in ((1,b'flash.sh requires root privilege\n'),(2,b'Parsing chip_info.bin information failed.\n'),
+                       (1,b'Parsing chip_info.bin information failed.\nmore\n')):
+            self.readinfo=(rc,out)
+            with self.assertRaisesRegex(ValueError,'read-info generation failed'):self.probe()
 
     def test_short_eeprom_refused(self):
         self.bad='short'

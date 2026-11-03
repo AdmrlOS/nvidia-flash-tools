@@ -125,13 +125,14 @@ class IntegrationTests(unittest.TestCase):
         w.runner = runner
         vendor = Vendor(w.tree, 'orin', '1-2', workspace=w)
         package = vendor.generate_qspi()
+        self.assertIn('--no-flash', calls[0][0])
         self.assertIn('--sign', calls[0][0])
         self.assertIn('--qspi-only', calls[0][0])
         self.assertNotIn('FAB', calls[0][1]['env'])
         (w.tree/'bootloader/signed/flash.xml.tmp').write_text('changed')
         with self.assertRaisesRegex(ValueError, 'tree changed'):
             vendor.provision_qspi(package)
-        self.assertEqual(len(calls), 2)  # actual signer edge + file-only parser
+        self.assertEqual(len(calls), 2)  # actual signer edge + approved SPI snapshot; flash.idx kept
 
     def test_remote_ecid_exact_helper_output(self):
         from nvidia_flash_tools.transport import check_remote_ecid

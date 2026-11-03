@@ -99,7 +99,14 @@ def validate_blob(directory, expected_boot, expected_key, chip_major=None):
                     'blob.xml',oracle.name],cwd=directory,check=True,stdout=subprocess.PIPE)
     try:
         actual = (directory/'blob.bin').read_bytes()
-        if actual != oracle.read_bytes(): raise ValueError('generated RCM blob bytes differ from exact manifest')
+        expected = oracle.read_bytes()
+        # tegrahost_v2 fills header bytes 8..75 from a per-second seed (observed
+        # R39.2.1: identical inputs differ only there, across file counts, sizes
+        # and chip majors). Everything else must be byte-identical.
+        salt = slice(8, 76)
+        if (len(actual) != len(expected) or actual[:4] != b'blob'
+                or actual[:salt.start] + actual[salt.stop:] != expected[:salt.start] + expected[salt.stop:]):
+            raise ValueError('generated RCM blob bytes differ from exact manifest')
         return hashlib.sha256(actual).hexdigest()
     finally:
         oracle.unlink(missing_ok=True)

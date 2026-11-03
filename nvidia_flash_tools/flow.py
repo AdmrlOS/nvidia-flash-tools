@@ -26,6 +26,11 @@ def installer_hashes(installer):
     paths = [p for p in installer.iterdir() if p.is_file() or p.is_symlink()]
     if implementation.is_dir():
         paths.extend(implementation.glob('*.py'))
+    vendor_inputs = installer / 'vendor-inputs'
+    if vendor_inputs.is_symlink():
+        raise ValueError('installer vendor-inputs symlink refused')
+    if vendor_inputs.is_dir():
+        paths.extend(p for p in vendor_inputs.rglob('*') if p.is_file() or p.is_symlink())
     result = {}
     for path in sorted(paths):
         info = path.lstat()
@@ -40,6 +45,10 @@ def approval_contract(workspace, release, installer, helper, recovery, package, 
     import hashlib
     from nvidia_flash_tools.security import regular_graph
     workspace.validate()
+    from nvidia_flash_tools import carrier
+    # A J401 identity must carry accepted cvb evidence AND the typed confirmation
+    # before any digest exists; both are then bound through physical_board.
+    carrier.validate_bound(board)
     contract = {'schema': 2, 'release': release,
                 'installer': installer_hashes(installer),
                 'helper_sha256': sha256(helper), 'recovery_sha256': sha256(recovery),
@@ -144,11 +153,34 @@ def install(args, release, issues):
     os.close(fd)
     from nvidia_flash_tools.workspace import Workspace
     with Workspace(args.output) as workspace:
-        workspace.prepare(args.nvidia_archive, args.sample_rootfs, release['nvidia'])
+        workspace.prepare(args.nvidia_archive, args.sample_rootfs, release['nvidia'],
+                          sample_rootfs_members(release, args.board), cache=prepared_cache(args))
+        install_vendor_inputs(workspace, release, args.board)
         session = thor_session if args.board == 'thor' else orin_session
         return session(workspace, args, release, confirm=getattr(args, 'guided_approval', interactive_approval),
                             select_disk=(lambda t: select_recovery_disk(t, choose_single=True)) if hasattr(args, 'guided_approval') else select_recovery_disk,
                             request_recovery=lambda identity: input('Re-enter Force Recovery on the SAME board, then Enter: '))
+
+
+def prepared_cache(args):
+    """Verified prepared-workspace cache beside the trusted download cache (None: no cache)."""
+    downloads = getattr(args, 'download_dir', None)
+    return Path(downloads) / 'prepared' if downloads else None
+
+
+def sample_rootfs_members(release, board):
+    """Pinned sample-rootfs subset for boards whose vendor steps were traced (else None: all)."""
+    from nvidia_flash_tools import vendor_inputs
+    if board not in vendor_inputs.BOARDS:
+        return None
+    return vendor_inputs.load(release, board, Path(__file__).resolve().parent.parent)['rootfs_members']
+
+
+def install_vendor_inputs(workspace, release, board):
+    """Board-specific pinned inputs (recomputer-j40) from the authenticated bundle."""
+    from nvidia_flash_tools import vendor_inputs
+    if board in release.get('boards', {}) or board in vendor_inputs.BOARDS:
+        return vendor_inputs.install(workspace, release, board, Path(__file__).resolve().parent.parent)
 
 
 def orin_session(workspace, args, release, *, confirm, select_disk,
@@ -159,7 +191,7 @@ def orin_session(workspace, args, release, *, confirm, select_disk,
     experimental_authorization(args)
     if request_recovery is None:
         raise ValueError('same-board physical recovery callback required before firmware erase')
-    if args.board not in ('orin','orin-nx'):
+    if args.board not in ('orin','orin-nx','recomputer-j40'):
         raise ValueError('exact Orin reference target required')
     workspace.validate()
     record = release['recovery']['helper']
@@ -167,10 +199,19 @@ def orin_session(workspace, args, release, *, confirm, select_disk,
         raise ValueError('native helper source not authenticated')
     helper = workspace.authenticate_helper(args.helper,record)
     vendor = vendor_factory(workspace.tree,args.board,args.usb_port,workspace=workspace)
+    vendor.carrier_power_cycle = request_recovery
     identity = dict(vendor.probe())
     observation = args.security_observation(identity)
     if observation != 'secure-boot-disabled-observed':
         raise ValueError('unknown/enabled UEFI Secure Boot; no security changes authorized')
+    from nvidia_flash_tools import carrier
+    if carrier.requires_confirmation(args.board):
+        # Identity stage: the cvb evidence was already table-checked by probe().
+        # The operator must additionally confirm the observed carrier by phrase.
+        confirm_carrier = getattr(args, 'carrier_confirmation', None)
+        if not callable(confirm_carrier):
+            raise ValueError('board-specific carrier confirmation required')
+        carrier.bind_confirmation(identity, confirm_carrier(identity))
     identity['uefi_policy'] = observation
     factory = transport_factory or usb_transport
     vendor.generate_qspi()
@@ -197,8 +238,10 @@ def orin_session(workspace, args, release, *, confirm, select_disk,
     vendor.provision_qspi(package)
     if request_recovery is None:
         raise ValueError('same-board physical recovery callback required')
+    before = vendor.usb_devnum()
     request_recovery(identity)
-    if vendor.probe() != {k:v for k,v in identity.items() if k != 'uefi_policy'}:
+    vendor.await_reenumeration(before)
+    if carrier.stable(vendor.probe()) != carrier.stable(identity):
         raise ValueError('Orin board changed after firmware stage')
     vendor.ram_boot(identity)
     transport = factory(vendor,identity)
@@ -261,5 +304,7 @@ def prepare(args, release):
     if not args.output or not args.nvidia_archive or not args.sample_rootfs:
         raise ValueError('prepare requires --output, --nvidia-archive and --sample-rootfs')
     with Workspace(args.output) as workspace:
-        workspace.prepare(args.nvidia_archive, args.sample_rootfs, release['nvidia'])
+        workspace.prepare(args.nvidia_archive, args.sample_rootfs, release['nvidia'],
+                          sample_rootfs_members(release, getattr(args, 'board', None)), cache=prepared_cache(args))
+        install_vendor_inputs(workspace, release, getattr(args, 'board', None))
     print('Authenticated BSP/rootfs prepared and full apply_binaries output recorded. Closed workspaces cannot be resumed as execution authority; install makes its own fresh session.')

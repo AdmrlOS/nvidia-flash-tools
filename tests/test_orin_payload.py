@@ -115,6 +115,24 @@ class OrinPayloadTests(unittest.TestCase):
     def test_exact_serialized_blob(self):
         self.assertEqual(len(validate_blob(self.root,self.boot,self.key)),64)
 
+    def test_blob_from_an_earlier_second_still_validates(self):
+        # Live, the vendor blob and the oracle are serialized seconds apart;
+        # tegrahost reseeds header bytes 8..75 each second.
+        import time
+        time.sleep(1.1)
+        self.assertEqual(len(validate_blob(self.root,self.boot,self.key)),64)
+
+    def test_only_the_seeded_header_window_may_differ(self):
+        for offset, ok in ((8, True), (75, True), (7, False), (76, False)):
+            with self.subTest(offset=offset):
+                self.serialize()
+                data=bytearray((self.root/'blob.bin').read_bytes());data[offset]^=1
+                (self.root/'blob.bin').write_bytes(data)
+                if ok:
+                    validate_blob(self.root,self.boot,self.key)
+                else:
+                    with self.assertRaisesRegex(ValueError,'blob bytes differ'):validate_blob(self.root,self.boot,self.key)
+
     def test_corrupt_blob_not_good_neighbor(self):
         data=bytearray((self.root/'blob.bin').read_bytes());data[-1]^=1
         (self.root/'blob.bin').write_bytes(data)

@@ -53,6 +53,10 @@ class OrinFlowTests(unittest.TestCase):
             executable=self.root/'native-helper'
             subprocess.run(['/usr/bin/gcc','-O2','-D_FORTIFY_SOURCE=3','-Wall','-Wextra','-Werror','-include','sys/sysmacros.h','-include','linux/fs.h',str(Path(__file__).resolve().parent.parent.joinpath('orin_native_fixture.c')),'-lcrypto','-o',str(executable)],check=True)
         identity={'br_cid':'0x80002300000000000000000000000123','ecid':'0x80002300000000000000000000000123','module':'3701-0000','carrier':'3737-0000'}
+        if board=='recomputer-j40':
+            from nvidia_flash_tools import carrier
+            identity.update(module='3767-0000',carrier=carrier.CARRIER,carrier_rule=carrier.RULE,
+                carrier_evidence=carrier.evidence(dump_returncode=1,dump_output='000000001f1e050d: E> NV3P_SERVER: Could not read eeprom for module cvb.\n',data=None,sha256=None,size=None,decoders={}))
         events=[]; files={}; offset=[0];controller=self.root/'spi';controller.write_bytes(b'\xff'*67108864)
         class RAM:
             def open_helper(self,helper,pin,observed):
@@ -66,7 +70,7 @@ class OrinFlowTests(unittest.TestCase):
             def bind(self):
                 if fault=='second-usb' and 'approve-firmware' in events:raise ValueError('second USB')
             def push(self,source,dest):files[dest]=Path(source).read_bytes()
-            def shell(self,*args):
+            def shell(self,*args,**kwargs):
                 if args[-1]=='br_cid':return b'BR_CID: 0x0000000000000000000000123\n'
                 if args[0]=='/bin/cat' and args[1].startswith('/sys/class/mtd/'):
                     return {'size':b'67108864','erasesize':b'65536','type':b'nor'}[Path(args[1]).name]
@@ -101,6 +105,9 @@ class OrinFlowTests(unittest.TestCase):
         def confirm(stage,contract,pin):
             events.append('approve-'+stage)
             self.assertEqual(contract['helper_sha256'],sha256(w.root/'approved-recovery-io'))
+            if board=='recomputer-j40':
+                self.assertEqual(contract['physical_board']['carrier_confirmation'],'OBSERVED SEEED RECOMPUTER J401 CARRIER')
+                self.assertEqual(contract['physical_board']['carrier_evidence']['outcome'],'dump-failed')
             if fault=='package-mutation' and stage=='firmware':
                 (signed/'bct.bin').write_bytes(b'changed-after-approval')
             return '' if fault=='abort-'+stage else pin
@@ -110,13 +117,14 @@ class OrinFlowTests(unittest.TestCase):
                 from nvidia_flash_tools.writer import RecoveryDisk
                 return RecoveryDisk(*args)
             return disk
-        args=argparse.Namespace(board=board,usb_port='1-2',helper=helper,image=fixture.image,journal=self.root/'journal',experimental_first_test=True,security_observation=lambda i:'secure-boot-disabled-observed')
+        args=argparse.Namespace(board=board,usb_port='1-2',helper=helper,image=fixture.image,journal=self.root/'journal',experimental_first_test=True,security_observation=lambda i:'secure-boot-disabled-observed',carrier_confirmation=lambda i:'OBSERVED SEEED RECOMPUTER J401 CARRIER')
         release={'recovery':{'helper':{'sha256':sha256(helper),'size':helper.stat().st_size,'source_sha256':sha256(Path(__file__).resolve().parent.parent.joinpath('recovery-io.c'))}},'boards':{board:{'image':{'sha256':sha256(fixture.image)}}}}
         selections=[0]
         def select(transport):
             selections[0]+=1
             return dict(physical,serial='replaced') if fault=='disk-change' and selections[0]>=3 else physical
-        with patch.object(Vendor,'probe',side_effect=probes),patch.object(Vendor,'ram_boot',boot):
+        with patch.object(Vendor,'probe',side_effect=probes),patch.object(Vendor,'ram_boot',boot),\
+                patch.object(Vendor,'usb_devnum',return_value='7'),patch.object(Vendor,'await_reenumeration'):
             def execute():return flow.orin_session(w,args,release,confirm=confirm,select_disk=select,vendor_factory=lambda *a,**k:v,transport_factory=factory,disk_factory=disk_factory,request_recovery=lambda i:events.append('recovery'))
             if fault:
                 with self.assertRaises((ValueError,subprocess.CalledProcessError)):execute()
@@ -130,6 +138,7 @@ class OrinFlowTests(unittest.TestCase):
 
     def test_agx_flow_actual_vendor_executor_real_gpt(self):self.exercise()
     def test_nx_flow_actual_vendor_executor_real_gpt(self):self.exercise(board='orin-nx')
+    def test_j40_flow_actual_vendor_executor_real_gpt(self):self.exercise(board='recomputer-j40')
     def test_disk_changed_after_ram_reboot(self):self.exercise('disk-change')
     def test_package_changed_during_approval(self):self.exercise('package-mutation')
     def test_abort_firmware(self):self.exercise('abort-firmware')

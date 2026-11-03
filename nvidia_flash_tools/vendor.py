@@ -16,9 +16,19 @@ import xml.etree.ElementTree as ET
 
 from nvidia_flash_tools.image import sha256
 
+# board -> (module, sku, carrier, carrier_sku, chip). recomputer-j40 has no
+# NVIDIA carrier ID: its carrier fields are not matched against any EEPROM
+# decode; nvidia_flash_tools.carrier owns that rule.
 BOARDS = {'thor': ('3834', '0008', '4071', '0000', '26'),
           'orin': ('3701', '0000', '3737', '0000', '23'),
-          'orin-nx': ('3767', '0000', '3768', '0000', '23')}
+          'orin-nx': ('3767', '0000', '3768', '0000', '23'),
+          'recomputer-j40': ('3767', '0000', 'seeed', 'j401', '23')}
+# NVIDIA flash.sh board configuration per board; anything absent is jetson-agx-<board>-devkit.
+ALIASES = {'orin-nx': 'jetson-orin-nano-devkit-super',
+           'recomputer-j40': 'recomputer-j40-qspi'}
+# Boards whose flash configuration disables recovery.img (every *-qspi.conf)
+# build the RAM-boot recovery image with a pinned recovery variant.
+RECOVERY_ALIASES = {'recomputer-j40': 'recomputer-j40-recovery'}
 
 
 def clean_env():
@@ -124,7 +134,14 @@ class Vendor:
         if board not in BOARDS or not re.fullmatch(r'[0-9]+-[0-9]+(?:\.[0-9]+)*', port):
             raise ValueError('unsupported board/physical USB port')
         self.tree, self.board, self.port = Path(tree).resolve(), board, port
-        self.alias = 'jetson-orin-nano-devkit-super' if board == 'orin-nx' else 'jetson-agx-' + board + '-devkit'
+        self.alias = ALIASES.get(board) or 'jetson-agx-' + board + '-devkit'
+        self.recovery_alias = RECOVERY_ALIASES.get(board, self.alias)
+        # J401: called after a failed carrier EEPROM read to have the operator
+        # power-cycle the unit back into boot ROM recovery.
+        self.carrier_power_cycle = None
+        self.cvb_dump = None
+        # Signed SPI graph that plan() approved; generate_qspi snapshots it live.
+        self.qspi_signed = self.tree / 'bootloader/signed'
         self.live = runner is None
         self.workspace = workspace
         if workspace is not None and workspace.tree != self.tree:
@@ -150,12 +167,57 @@ class Vendor:
             raise subprocess.CalledProcessError(result.returncode, argv, output=raw)
         return raw.decode()
 
+    def run_tolerated(self, argv, env=None, cwd=None, timeout=1800):
+        """Run one allowlisted carrier-evidence command; its failure is returned, not raised."""
+        from nvidia_flash_tools.workspace import tolerable_failure
+        if not tolerable_failure(argv):
+            raise ValueError('command failure may not be tolerated')
+        if self.live:
+            if self.workspace is None:
+                raise ValueError('fresh authenticated locked workspace required')
+            return self.workspace.run_tolerated(argv, env, cwd, timeout)
+        environment = clean_env()
+        environment.update(env or {})
+        result = self.runner([str(x) for x in argv], cwd=cwd or self.tree,
+                             env=environment, timeout=timeout, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, check=False)
+        raw = result.stdout
+        with self.audit.open('a') as log:
+            log.write(json.dumps({'argv': list(map(str, argv)), 'environment': environment,
+                                  'returncode': result.returncode, 'output': raw.decode(errors='replace'),
+                                  'tolerated': True}) + '\n')
+        return result.returncode, raw.decode(errors='replace')
+
     def single_rcm(self, sysfs=Path('/sys/bus/usb/devices')):
         # Refuse other NVIDIA USB devices too: conservative v1, no multi-board path.
         devices = [p.name for p in sysfs.iterdir() if (p / 'idVendor').exists()
                    and (p / 'idVendor').read_text().strip() == '0955']
         if devices != [self.port]:
             raise ValueError('require exactly one NVIDIA USB device on selected port')
+
+    def usb_devnum(self, sysfs=Path('/sys/bus/usb/devices')):
+        try:
+            return (sysfs / self.port / 'devnum').read_text().strip()
+        except FileNotFoundError:
+            return None
+
+    def await_reenumeration(self, before, sysfs=Path('/sys/bus/usb/devices'), timeout=120, sleep=None):
+        """Wait for a fresh enumeration on the selected port after a power cycle.
+
+        Enter can arrive before the unit actually loses power; the old device
+        number is still present then, and the boot ROM is not yet answering.
+        """
+        import time
+        sleep = sleep or time.sleep
+        print('Waiting for the board to re-enumerate in Force Recovery on port ' + self.port + '...')
+        for _ in range(timeout * 2):
+            now = self.usb_devnum(sysfs)
+            if now is not None and now != before:
+                sleep(2)   # boot ROM settles after enumeration
+                return
+            sleep(0.5)
+        raise ValueError('no fresh Force Recovery enumeration on port ' + self.port +
+                         ': power-cycle the unit with the jumper fitted, then start again')
 
     def uid(self):
         self.single_rcm()
@@ -169,6 +231,7 @@ class Vendor:
         bl = self.tree / 'bootloader'
         # Fresh EEPROM and full security read required on EVERY boundary.
         stale = ('cvm.bin', 'cvb.bin', 'chip_info.bin_bak', 'fuse_t234.bin', 'fuse_t264.bin')
+        self.cvb_dump = None
         if self.workspace is not None:
             self.workspace.remove_generated(['bootloader/' + name for name in stale])
         else:
@@ -189,39 +252,106 @@ class Vendor:
             if not value or '\n' in value:
                 raise ValueError('unknown EEPROM decoder output')
             return value
-        actual = (decode('-i', 'cvm.bin'), decode('-k', 'cvm.bin'),
-                  decode('-i', 'cvb.bin'), decode('-k', 'cvb.bin'))
-        if actual != (module, sku, carrier, carrier_sku):
-            raise ValueError('module/SKU/carrier not allowlisted')
-        identity.update({'module': module + '-' + sku, 'carrier': carrier + '-' + carrier_sku,
-                         'fab': decode('-f', 'cvm.bin'), 'revision': decode('-r', 'cvm.bin'),
-                         'cvm_sha256': sha256(bl / eeproms['cvm.bin']), 'cvb_sha256': sha256(bl / eeproms['cvb.bin'])})
+        from nvidia_flash_tools import carrier as carrier_rule
+        if self.board in carrier_rule.BOARDS:
+            # Module identity is exactly as strict as orin-nx. The carrier has no
+            # NVIDIA-format EEPROM: its cvb result is recorded and table-checked.
+            if (decode('-i', 'cvm.bin'), decode('-k', 'cvm.bin')) != (module, sku):
+                raise ValueError('module/SKU/carrier not allowlisted')
+            record = self.cvb_evidence(bl, eeproms)
+            carrier_rule.check_evidence(record)
+            identity.update({'module': module + '-' + sku, 'carrier': carrier_rule.CARRIER,
+                             'carrier_rule': carrier_rule.RULE, 'carrier_evidence': record,
+                             'fab': decode('-f', 'cvm.bin'), 'revision': decode('-r', 'cvm.bin'),
+                             'cvm_sha256': sha256(bl / eeproms['cvm.bin']),
+                             'cvb_sha256': record['cvb_sha256']})
+            if record['outcome'] == 'dump-failed':
+                # MB2 refuses the J401 cvb read and tegraflash stops before its
+                # recovery reboot. Each tegraflash run deletes its private session
+                # state, so no later run can reset the applet: only a power cycle
+                # restores the boot ROM.
+                if not callable(self.carrier_power_cycle):
+                    raise ValueError('J401 carrier read left the MB2 applet running; power cycle required')
+                print('The J401 has no NVIDIA carrier EEPROM; that read leaves NVIDIA\'s flashing applet running. '
+                      'Power-cycle the unit with the Force Recovery jumper still fitted.')
+                before = self.usb_devnum()
+                self.carrier_power_cycle(dict(identity))
+                self.await_reenumeration(before)
+            # The board must be back in boot ROM recovery: the same board.
+            if self.uid() != {k: identity[k] for k in ('br_cid', 'ecid')}:
+                raise ValueError('board changed during carrier EEPROM read')
+        else:
+            actual = (decode('-i', 'cvm.bin'), decode('-k', 'cvm.bin'),
+                      decode('-i', 'cvb.bin'), decode('-k', 'cvb.bin'))
+            if actual != (module, sku, carrier, carrier_sku):
+                raise ValueError('module/SKU/carrier not allowlisted')
+            identity.update({'module': module + '-' + sku, 'carrier': carrier + '-' + carrier_sku,
+                             'fab': decode('-f', 'cvm.bin'), 'revision': decode('-r', 'cvm.bin'),
+                             'cvm_sha256': sha256(bl / eeproms['cvm.bin']), 'cvb_sha256': sha256(bl / eeproms['cvb.bin'])})
         fuse = bl / ('fuse_t264.bin' if self.board == 'thor' else 'fuse_t234.bin')
         identity['fuses'] = fuse_info(fuse.read_text(), self.board)
         return identity
+
+    def cvb_evidence(self, bl, eeproms):
+        """Record the J401 cvb dump verbatim: sha256 + decode results or the exact failure."""
+        import stat
+        from nvidia_flash_tools import carrier as carrier_rule
+        dump = self.cvb_dump
+        if dump is None:
+            raise ValueError('carrier EEPROM dump result missing')
+        name = eeproms['cvb.bin']
+        data, digest, size = None, None, None
+        path = bl / name
+        if dump['returncode'] == 0 and path.is_file() and not path.is_symlink():
+            info = path.lstat()
+            digest, size = sha256(path), info.st_size
+            if stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size == carrier_rule.EEPROM_SIZE:
+                data = path.read_bytes()
+            else:
+                data = False
+        decoders = {}
+        if isinstance(data, bytes):
+            for flag in ('-i', '-k'):
+                decoders[flag] = self.run_tolerated(['./chkbdinfo', flag, name], cwd=bl, timeout=10)
+        return carrier_rule.evidence(dump_returncode=dump['returncode'], dump_output=dump['output'],
+                                     data=data, sha256=digest, size=size, decoders=decoders)
 
     def generate_qspi(self):
         if self.board != 'thor':
             from nvidia_flash_tools.orin_recovery import command
             from nvidia_flash_tools.orin_firmware import plan
             signed = self.tree / 'bootloader/signed'
+            snapshot = self.tree / 'bootloader/admiral-qspi-signed'
             if self.workspace is not None:
                 self.workspace.validate()
             # A fresh sign must create this graph; never bless a cached cfg.
-            if signed.exists() or signed.is_symlink():
+            if any(p.exists() or p.is_symlink() for p in (signed, snapshot)):
                 raise ValueError('Orin signing requires a fresh signed output directory')
-            self.run(['./flash.sh', '--no-systemimg', '--sign', '--qspi-only',
+            self.run(['./flash.sh', '--no-flash', '--no-systemimg', '--sign', '--qspi-only',
                       '-c', 'bootloader/generic/cfg/flash_t234_qspi.xml',
                       '--usb-instance', self.port, self.alias, 'internal'],
                      {'ADDITIONAL_DTB_OVERLAY': 'BootOrderNvme.dtbo'})
-            command(self, 'sign')
+            # --no-flash --sign signs locally; flashcmd.txt then holds the
+            # generated secureflash, which is never executed. Any other
+            # operation means flash.sh did not run in generate-only mode.
+            command(self, 'secureflash;reboot')
             signed = self.tree / 'bootloader/signed'
-            # R39.2.1 tegraflash_generate_index_file passes an obsolete extra
-            # XML argument; the shipped parser accepts one output argument.
-            # Regenerate using the actual signed PT and verify its XML/payloads.
             if self.live:
-                self.run([self.tree/'bootloader/tegraparser_v2','--pt','flash.xml.bin',
-                          '--generateflashindex','flash.idx'],cwd=signed)
+                # flash.sh writes the version blob (VERFILENAME) to bootloader/,
+                # not signed/; it is unsigned and its sha1 is in flash.idx.
+                ver = 'qspi_bootblob_ver.txt'
+                if ver in (signed/'flash.xml.tmp').read_text() and not (signed/ver).exists():
+                    self.run(['/bin/cp', '--', '../' + ver, ver], cwd=signed)
+                # The real R39.2.1 sign writes a complete flash.idx; regenerating
+                # it drops the BCT/MB1_BCT/MEM_BCT/backup filenames. Only build
+                # one when the vendor step left none (signed/ is fresh above).
+                if not (signed/'flash.idx').exists():
+                    self.run([self.tree/'bootloader/tegraparser_v2','--pt','flash.xml.bin',
+                              '--generateflashindex','flash.idx'],cwd=signed)
+                # T234 --rcm-boot always re-signs into signed/ (odmsign), so the
+                # approved SPI graph is kept in its own copy for plan and provision.
+                self.run(['/bin/cp', '-a', '--', 'signed', snapshot.name], cwd=signed.parent)
+                signed = self.qspi_signed = snapshot
             self.orin_plan, _ = plan(signed/'flash.idx', signed/'flash.xml.tmp',
                                     self.tree/'bootloader/generic/cfg/flash_t234_qspi.xml')
             return package_hashes(self.tree)

@@ -97,7 +97,7 @@ def main():
     p.add_argument("--manifest-sha256", required=True, help="obtain independently from release operator")
     p.add_argument("--signature", type=Path)
     p.add_argument("--public-key", type=Path)
-    p.add_argument("--board", required=True, choices=("thor", "orin", "orin-nx"))
+    p.add_argument("--board", required=True, choices=("thor", "orin", "orin-nx", "recomputer-j40"))
     p.add_argument("--image", type=Path)
     p.add_argument("--download-dir", type=Path)
     p.add_argument("--download", action="store_true", help="prepare: fetch pinned NVIDIA inputs after consent")

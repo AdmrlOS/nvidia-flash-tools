@@ -286,9 +286,11 @@ class SSH:
         if (usb / 'idVendor').read_text().strip() != '0955':
             raise ValueError('USB network device is not NVIDIA')
 
-    def shell(self, *args):
+    def shell(self, *args, timeout=None):
         self.bind()
-        return self.run(self._command(shlex.join(args)))
+        if timeout is None:
+            return self.run(self._command(shlex.join(args)))
+        return self.run(self._command(shlex.join(args)), timeout=timeout)
 
     def push(self, source, target):
         self.bind()

@@ -52,6 +52,92 @@
         "sha256": "ff1110f5bfdd06bf252722de2990f9c0d1b70c7ec4ebfede7ea1332c5a786b74"
       },
       "download_url": null
+    },
+    "recomputer-j40": {
+      "module": "3767-0000",
+      "carrier": "seeed-j401",
+      "carrier_rule": "recomputer-j40-cvb-v2",
+      "vendor_board": "recomputer-j40-qspi",
+      "image": {
+        "name": "admiral-recomputer-j40.img",
+        "size": 3699412992,
+        "sha256": "52c2ca1f08f2814f5267c286dd79f2d0ad730cc0ff356ca0129c739f3ed6d0ec"
+      },
+      "download_url": null,
+      "vendor_inputs": {
+        "source": {
+          "repository": "admiral-bsp",
+          "branch": "staging/bsp-ci",
+          "commits": [
+            "a551088d63290d784a46e21cdf764fc58d3279d7",
+            "73e3a23b6f1b9c9371ed582411945073855f3ad5",
+            "72fdcc650780bae2941bf854dfd8fd19514fe152"
+          ],
+          "path": "board/admiral/boards/recomputer-j40/flash",
+          "dtb_dtbo_origin": "output/recomputer-j40/images/recomputer-j40-flash/{dtb,dtbo}"
+        },
+        "mb2_patch": {
+          "target": "bootloader/tegra234-mb2-bct-common.dtsi",
+          "patch": {
+            "path": "vendor-inputs/recomputer-j40/patches/0001-mb2-bct-skip-carrier-eeprom-read.patch",
+            "size": 962,
+            "sha256": "a063f020c1cbdca71cac2e51c0d710ae7f6f153f2320f1662a57b5136bea4a94"
+          },
+          "stock_sha256": "42572d28b0dec865e9e0db3a6c04c03e77dd1c06fce80d76f45c3a12f2ed096b",
+          "patched_sha256": "42f96bb96cb6825c575aa6242f77a1cec4f571055d8b4e2d789991d409fe2f73"
+        },
+        "config": {
+          "path": "vendor-inputs/recomputer-j40/recomputer-j40-qspi.conf",
+          "size": 2562,
+          "sha256": "9b99ff783fceb07b1cc7be0090571c3694f85e70687dd4ff1355981036673e4d",
+          "install": "recomputer-j40-qspi.conf"
+        },
+        "recovery_config": {
+          "path": "vendor-inputs/recomputer-j40/recomputer-j40-recovery.conf",
+          "size": 428,
+          "sha256": "b343d5924966de3134e92376e0fe6add80c3b4e694804e77366b5189a3941c5a",
+          "install": "recomputer-j40-recovery.conf"
+        },
+        "sample_rootfs_members": {
+          "path": "vendor-inputs/recomputer-j40/sample-rootfs-members.txt",
+          "size": 215654,
+          "sha256": "9971e22f3c6410612355aeba14bd2e966bb8bae80bca289a1ce6ef50463d9835"
+        },
+        "dtbs": [
+          {
+            "path": "vendor-inputs/recomputer-j40/dtb/tegra234-j401-p3768-0000+p3767-0000-recomputer.dtb",
+            "size": 210191,
+            "sha256": "7aba2cb74df7623a44a02f577cda5ccc74c0e83893c32ef36ae30b701a5faf58",
+            "install": "kernel/dtb/tegra234-j401-p3768-0000+p3767-0000-recomputer.dtb"
+          },
+          {
+            "path": "vendor-inputs/recomputer-j40/dtb/tegra234-j401-p3768-0000+p3767-0001-recomputer.dtb",
+            "size": 210191,
+            "sha256": "cbf6be8a366af15e9f9849c3b95436b36d3155b8717a577914e4bbc11909616d",
+            "install": "kernel/dtb/tegra234-j401-p3768-0000+p3767-0001-recomputer.dtb"
+          },
+          {
+            "path": "vendor-inputs/recomputer-j40/dtb/tegra234-j401-p3768-0000+p3767-0003-recomputer.dtb",
+            "size": 210023,
+            "sha256": "6c0b43ef577d3659a1eddc30d4b0e991e96de9804bd0e1dc719143150a9256f8",
+            "install": "kernel/dtb/tegra234-j401-p3768-0000+p3767-0003-recomputer.dtb"
+          },
+          {
+            "path": "vendor-inputs/recomputer-j40/dtb/tegra234-j401-p3768-0000+p3767-0004-recomputer.dtb",
+            "size": 210023,
+            "sha256": "b3a430265e596f533d5482ef250b668ffdd4b630df65d61973916d243128e9ec",
+            "install": "kernel/dtb/tegra234-j401-p3768-0000+p3767-0004-recomputer.dtb"
+          }
+        ],
+        "dtbos": [
+          {
+            "path": "vendor-inputs/recomputer-j40/dtbo/tegra234-p3767-camera-p3768-imx219-dual-seeed.dtbo",
+            "size": 16362,
+            "sha256": "0832ace73789c71cfcc3d531e812206b6ec268b5687b798649bd7f6f2908983f",
+            "install": "kernel/dtb/tegra234-p3767-camera-p3768-imx219-dual-seeed.dtbo"
+          }
+        ]
+      }
     }
   }
 }

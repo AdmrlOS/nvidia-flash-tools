@@ -22,9 +22,12 @@ PINS = {'tegraflash_internal.py':'1ee04eb3a363aa89e4e7c680c77ce391e2f28d5901086b
         'tegraflash_impl_t234.py':'a77d3b478d02396f0d7dded7369382a0e1ecac0d185a2ec232df872d0fa3abca',
         'tegraparser_v2':'2b5ec7c1bfa8ffad7d97957c98a449141fc7ed0aa6989142d3e53ed73b699f36'}
 XML = '<partition_layout version="01.00.0000"><device type="spi" instance="0" sector_size="512" num_sectors="131072"><partition name="BCT" type="boot_config_table"><allocation_policy>sequential</allocation_policy><filesystem_type>basic</filesystem_type><size>1048576</size><file_system_attribute>0</file_system_attribute><allocation_attribute>8</allocation_attribute><percent_reserved>0</percent_reserved><filename>bct.bin</filename></partition></device></partition_layout>'
+# Stock R39.2.1 A_VER; flash.sh substitutes VERFILE and writes the blob to bootloader/.
+VER_XML = XML.replace('</device>', '<partition name="A_VER" type="data"><allocation_policy> sequential </allocation_policy><filesystem_type> basic </filesystem_type><size> 65536 </size><align_boundary> 65536 </align_boundary><file_system_attribute> 0 </file_system_attribute><partition_attribute> 0 </partition_attribute><allocation_attribute> 8 </allocation_attribute><percent_reserved> 0 </percent_reserved><filename> qspi_bootblob_ver.txt </filename></partition></device>')
 
 
 def fixture(workspace, fault=None):
+    layout = VER_XML if fault == 'ver' else XML
     bl = workspace.tree/'bootloader'; bl.mkdir(exist_ok=True)
     for name, pin in PINS.items():
         if not (SOURCE/name).is_file():
@@ -35,9 +38,13 @@ def fixture(workspace, fault=None):
         shutil.copyfile(SOURCE/name, bl/name)
     (bl/'tegraparser_v2').chmod(0o700)
     stock = bl/'generic/cfg/flash_t234_qspi.xml'
-    stock.parent.mkdir(parents=True, exist_ok=True); stock.write_text(XML)
-    (bl/'flashcmd.txt').write_text('./tegraflash.py --chip "0x23 9" --cmd sign')
-    (bl/'flash.xml').write_text(XML)
+    stock.parent.mkdir(parents=True, exist_ok=True); stock.write_text(layout)
+    # R39.2.1 flash.sh --no-flash --sign signs locally and leaves this generated,
+    # unexecuted command (observed on a J4012 workspace).
+    (bl/'flashcmd.txt').write_text('./tegraflash.py --cmd "secureflash;reboot"  --cfg secureflash.xml --chip 0x23 --instance 1-2  --bct_backup')
+    (bl/'flash.xml').write_text(layout)
+    if fault == 'ver':
+        (bl/'qspi_bootblob_ver.txt').write_text('NV4\n# R39 , REVISION: 2.1\n')
     (bl/'bct.bin').write_bytes(b'file-only-BCT-no-device-metadata')
     workspace._seal_modes(); workspace.expected = snapshot(workspace.tree, os.geteuid())
 
@@ -49,6 +56,8 @@ def fixture(workspace, fault=None):
 
     def edge(argv, **kwargs):
         if argv[0] != './flash.sh':
+            if argv[:2] == ['/bin/cp', '--'] and fault == 'ver' or argv[:3] == ['/bin/cp', '-a', '--']:
+                return subprocess.run(argv, **kwargs)   # version-blob staging / approved SPI snapshot
             # Only the real file-only parser repair may cross this edge.
             assert Path(argv[0]) == bl/'tegraparser_v2', argv
             return subprocess.run(argv, **kwargs)
@@ -108,10 +117,20 @@ class SignedCfgTests(unittest.TestCase):
         self.assertIn('bootloader/signed/flash.xml.tmp',package)
         self.assertEqual(package,package_hashes(w.tree))
         self.assertEqual(v.orin_plan['payloads'][0]['filename'],'bct.bin')
+        # RAM boot re-signs signed/; the approved graph lives in its own copy.
+        self.assertEqual(v.qspi_signed, w.tree/'bootloader/admiral-qspi-signed')
+        self.assertEqual((v.qspi_signed/'flash.idx').read_bytes(), (w.tree/'bootloader/signed/flash.idx').read_bytes())
         # Provision must select the same current XML before any transport edge.
         transport=types.SimpleNamespace(bind=lambda: (_ for _ in ()).throw(RuntimeError('validated-plan-before-hardware')))
         with self.assertRaisesRegex(RuntimeError,'validated-plan-before-hardware'):
             __import__('nvidia_flash_tools.orin_firmware', fromlist=['provision']).provision(v,transport)
+
+    def test_version_blob_staged_from_bootloader_and_hash_bound(self):
+        w,v=self.generate('ver'); v.generate_qspi(); w.validate()
+        bl=w.tree/'bootloader'
+        self.assertEqual((bl/'signed/qspi_bootblob_ver.txt').read_bytes(),(bl/'qspi_bootblob_ver.txt').read_bytes())
+        ver=[p for p in v.orin_plan['payloads'] if p['partition']=='A_VER']
+        self.assertEqual([p['sha256'] for p in ver],[hashlib.sha256((bl/'qspi_bootblob_ver.txt').read_bytes()).hexdigest()])
 
     def test_decoy_cannot_authorize_missing_current_cfg(self):
         w,v=self.generate('decoy-only')

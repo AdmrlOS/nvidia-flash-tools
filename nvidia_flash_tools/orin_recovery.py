@@ -22,8 +22,11 @@ def fresh_eeproms(vendor):
     import stat
     bl = vendor.tree/'bootloader'
     vendor.workspace.remove_generated(['bootloader/readinfocmd.txt'])
-    vendor.run(['./flash.sh','--no-flash','--read-info','--usb-instance',vendor.port,
-                vendor.alias,'internal'])
+    from nvidia_flash_tools.workspace import READINFO_CHIP_INFO_FAILURE
+    returncode, output = vendor.run_tolerated(['./flash.sh','--no-flash','--read-info','--usb-instance',
+                                               vendor.port,vendor.alias,'internal'])
+    if returncode and (returncode != 1 or output.rstrip().splitlines()[-1:] != [READINFO_CHIP_INFO_FAILURE]):
+        raise ValueError('flash.sh read-info generation failed (exit %d):\n%s' % (returncode, output[-4000:]))
     raw = (bl/'readinfocmd.txt').read_text().splitlines()
     lines = raw
     commands = [shlex.split(line.rstrip(';')) for line in lines if line.startswith('./tegraflash.py ')]
@@ -41,19 +44,54 @@ def fresh_eeproms(vendor):
     outputs = {name+'.bin':'admiral-'+nonce+'-'+name+'.bin' for name in ('cvm','cvb')}
     for name in outputs.values():
         if (bl/name).exists(): raise ValueError('EEPROM session output already exists')
-    argv[index] = '; '.join([shlex.join(fuses[0]),
-                            'dump eeprom cvm '+outputs['cvm.bin'],
-                            'dump eeprom cvb '+outputs['cvb.bin'],'reboot recovery'])
     if '--instance' in argv:
         if argv.count('--instance') != 1: raise ValueError('duplicate EEPROM instance')
         argv[argv.index('--instance')+1] = vendor.port
     else:
         argv += ['--instance',vendor.port]
+    from nvidia_flash_tools import carrier
+    if vendor.board in carrier.BOARDS:
+        return _fresh_eeproms_unverified_carrier(vendor, bl, argv, index, fuses[0], outputs)
+    argv[index] = '; '.join([shlex.join(fuses[0]),
+                            'dump eeprom cvm '+outputs['cvm.bin'],
+                            'dump eeprom cvb '+outputs['cvb.bin'],'reboot recovery'])
     vendor.run(['/usr/bin/python3',*argv],cwd=bl)
     for name in outputs.values():
         info = (bl/name).lstat()
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != 256:
             raise ValueError('fresh EEPROM must be regular exact 256 bytes')
+    return outputs
+
+
+def _fresh_eeproms_unverified_carrier(vendor, bl, argv, index, fuses, outputs):
+    """Strict fuses + module EEPROM; the carrier EEPROM dump is evidence, not a requirement.
+
+    The Seeed J401 has no NVIDIA-format carrier EEPROM at the devkit address:
+    MB2 answers "Could not read eeprom for module cvb" and tegraflash stops
+    before its recovery reboot, leaving the MB2 applet running. The mandatory
+    fuse and module reads therefore run first and end with their own recovery
+    reboot; the carrier dump runs last, and its failure is recorded verbatim.
+    Vendor.probe then has the operator power-cycle back into recovery.
+    """
+    import stat
+    module = list(argv)
+    module[index] = '; '.join([shlex.join(fuses), 'dump eeprom cvm '+outputs['cvm.bin'],
+                               'reboot recovery'])
+    vendor.run(['/usr/bin/python3',*module],cwd=bl)
+    info = (bl/outputs['cvm.bin']).lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != 256:
+        raise ValueError('fresh EEPROM must be regular exact 256 bytes')
+    carrier = list(argv)
+    carrier[index] = 'dump eeprom cvb '+outputs['cvb.bin']+'; reboot recovery'
+    returncode, output = vendor.run_tolerated(['/usr/bin/python3',*carrier],cwd=bl)
+    vendor.cvb_dump = {'returncode':returncode, 'output':output}
+    cvb = bl/outputs['cvb.bin']
+    if returncode and (cvb.exists() or cvb.is_symlink()):
+        # A failed dump's partial file is not evidence; the failure is.
+        if vendor.workspace is not None:
+            vendor.workspace.remove_generated(['bootloader/'+outputs['cvb.bin']])
+        else:
+            cvb.unlink()
     return outputs
 
 
@@ -63,7 +101,10 @@ def command(vendor, operation):
         raise ValueError('unsupported Orin generated executor')
     if argv[argv.index('--cmd')+1].strip() != operation:
         raise ValueError('unexpected Orin generated operation')
-    if any(arg in argv for arg in ('--securedev','--key','--encrypt_key','--skipuid','--sparseupdate')):
+    # R39.2.1 T234 RCM boot is always odmsign's pre-signed path: zero-key signed
+    # images plus --securedev ("images already signed"). Keys stay refused.
+    refused = ('--key','--encrypt_key','--skipuid','--sparseupdate') + (() if operation == 'rcmboot' else ('--securedev',))
+    if any(arg in argv for arg in refused):
         raise ValueError('unsupported secured/implicit Orin executor')
     if '--chip' not in argv or argv[argv.index('--chip')+1] not in ('0x23','0x23 0','0x23 9'):
         raise ValueError('generated Orin executor chip mismatch')
@@ -85,7 +126,9 @@ def ram_boot(vendor, identity):
     # --no-flash without --rcm-boot exits before tegraflash execution.
     vendor.run(['./flash.sh','--no-flash','--no-systemimg','--qspi-only',
                 '-c','bootloader/generic/cfg/flash_t234_qspi.xml',
-                '--usb-instance',vendor.port,vendor.alias,'internal'])
+                '--usb-instance',vendor.port,vendor.recovery_alias,'internal'])
+    if not (bl/'recovery.img').is_file():
+        raise ValueError('flash.sh did not build bootloader/recovery.img for ' + vendor.recovery_alias)
     source = vendor.tree/'tools/kernel_flash/l4t_initrd_flash_internal.sh'
     text = source.read_text()
     match = re.search(r'^generate_flash_initrd\(\)\n\{\n.*?^\}',text,re.M|re.S)
@@ -131,8 +174,9 @@ def ram_boot(vendor, identity):
     if len(fields) < 2 or fields[0] != 'ssh-ed25519' or not re.fullmatch(r'[A-Za-z0-9+/]+={0,2}',fields[1]):
         raise ValueError('missing stock generated recovery SSH host key')
     vendor.recovery_hostkey = fields[:2]
-    # R39 t234 ignores --no_flash in its unsecured rcmboot branch. Suppress
-    # flash.sh's one execution site for generation only, retaining exact argv.
+    # R39 t234 ignores --no_flash in flash.sh's own rcmboot branch, so that one
+    # execution site is suppressed. On R39.2.1 T234 that branch is not reached:
+    # odmsign_ext signs and only generates (rcmboot_blob) under --no-flash.
     flash = vendor.tree/'flash.sh'
     original = flash.read_text()
     needle = '\t\teval "${flashcmd} --no_flash";'
@@ -141,7 +185,10 @@ def ram_boot(vendor, identity):
     flash.write_text(original.replace(needle,'\t\t: # Admiral: generation only, selected executor runs separately'))
     seal(vendor)
     try:
-        vendor.run(['./flash.sh','--no-flash','--rcm-boot','--usb-instance',vendor.port,
+        # -r: without it, --rcm-boot chroots into rootfs under qemu to refresh
+        # the stock l4t_initrd.img, which -I replaces anyway (and the J40's
+        # pinned sample-rootfs subset cannot run it).
+        vendor.run(['./flash.sh','-r','--no-flash','--rcm-boot','--usb-instance',vendor.port,
                     '-I', str(scratch/'initrd.img'), vendor.alias,'internal'], {'BOOTIMG':'boot0.img'})
     finally:
         flash.write_text(original); seal(vendor)

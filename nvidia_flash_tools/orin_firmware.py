@@ -11,6 +11,7 @@ import shlex
 from nvidia_flash_tools.vendor import qspi_package
 
 CAPACITY = 64 * 1024 * 1024
+EXECUTOR_TIMEOUT = 3600
 
 
 def plan(index, xml, stock):
@@ -38,9 +39,13 @@ def plan(index, xml, stock):
         if len(row) != 8 or not re.fullmatch(r'3:0:[A-Za-z0-9_-]+', row[1]):
             raise ValueError('unsupported Orin signed flash index')
         name = row[1].split(':')[2]
-        if name not in names or name in seen or not all(re.fullmatch('[0-9]+', row[i]) for i in (0, 2, 3, 5)):
+        # Rows with no payload (smm-fw, reserved, uefi_variables, ...) carry an
+        # empty filename, length and sha1; the vendor writer skips them.
+        empty = row[4] == row[5] == row[7] == ''
+        if name not in names or name in seen or not all(re.fullmatch('[0-9]+', row[i]) for i in (0, 2, 3)) \
+                or not (empty or re.fullmatch('[0-9]+', row[5])):
             raise ValueError('duplicate/unknown Orin partition or range')
-        start, size, length = map(int, (row[2], row[3], row[5]))
+        start, size, length = int(row[2]), int(row[3]), int(row[5] or 0)
         if size <= 0 or start % 512 or size % 512 or start + size > CAPACITY:
             raise ValueError('Orin partition outside SPI')
         configured_size=(configured[name].findtext('size') or '').strip()
@@ -95,8 +100,8 @@ def vendor_functions(source):
 
 
 def provision(vendor, transport):
-    index = vendor.tree / 'bootloader/signed/flash.idx'
-    xml = vendor.tree / 'bootloader/signed/flash.xml.tmp'
+    index = vendor.qspi_signed / 'flash.idx'
+    xml = vendor.qspi_signed / 'flash.xml.tmp'
     stock = vendor.tree / 'bootloader/generic/cfg/flash_t234_qspi.xml'
     contract, expected = plan(index, xml, stock)
     if contract != vendor.orin_plan:
@@ -105,10 +110,12 @@ def provision(vendor, transport):
     from nvidia_flash_tools.transport import check_remote_ecid
     check_remote_ecid(transport, vendor.approved_identity['ecid'])
     # Validate the one MTD controller BEFORE erase; no eMMC/block operation.
-    for name, value in (('size',str(CAPACITY)), ('erasesize','65536'), ('type','nor')):
+    # Erase block size only has to divide the device: it is erased whole and
+    # read back in full. Orin NX/Nano modules use 4 KiB-sector QSPI NOR (J4012).
+    for name, allowed in (('size',(str(CAPACITY),)), ('erasesize',('4096','65536')), ('type',('nor',))):
         actual = transport.shell('/bin/cat', '/sys/class/mtd/mtd0/' + name).decode().strip()
-        if actual != value:
-            raise ValueError('unexpected Orin SPI geometry/type')
+        if actual not in allowed:
+            raise ValueError('unexpected Orin SPI geometry/type: ' + name + '=' + actual)
     directory = transport.shell('/bin/mktemp','-d','/tmp/admiral-spi-XXXXXXXX').decode().strip()
     if not re.fullmatch(r'/tmp/admiral-spi-[A-Za-z0-9]{8}', directory):
         raise ValueError('invalid SPI scratch directory')
@@ -135,7 +142,9 @@ def provision(vendor, transport):
             raise ValueError('staged Orin SPI executor hash mismatch')
         # Rebind immediately before the first persistent write.
         transport.bind(); check_remote_ecid(transport, vendor.approved_identity['ecid'])
-        transport.shell('/bin/bash', directory + '/executor.sh')
+        # Whole-device NOR erase + write takes minutes (NVIDIA's own secureflash
+        # wrote this J4012's QSPI in ~15 min); the 120 s command default killed it.
+        transport.shell('/bin/bash', directory + '/executor.sh', timeout=EXECUTOR_TIMEOUT)
         digester = hashlib.sha256()
         for offset in range(0, CAPACITY, 4 * 1024 * 1024):
             count = min(4 * 1024 * 1024, CAPACITY-offset)

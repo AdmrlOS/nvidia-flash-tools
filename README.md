@@ -1,7 +1,8 @@
 # NVIDIA flash tools
 
-Install an Admiral disk image on a **Jetson AGX Thor** or **Jetson AGX Orin**
-reference kit using the pinned NVIDIA Jetson Linux 39.2.1 recovery tools.
+Install an Admiral disk image on a **Jetson AGX Thor**, **Jetson AGX Orin**,
+Orin NX reference kit or **Seeed reComputer J4012** using the pinned NVIDIA
+Jetson Linux 39.2.1 recovery tools.
 
 **Back up first: installation replaces QSPI boot firmware and erases the entire
 selected NVMe. Not tested on physical devices:** USB recovery, firmware acceptance,
@@ -118,11 +119,73 @@ Other AGX SKUs, including 64GB/industrial modules, are not implied. This program
 NVIDIA: [AGX Orin ports and recovery][orin-hardware] · [Orin flashing][orin-flash].
 Existing Orin NX users: see [the separate selector](docs/reference.md#orin-nx).
 
+## 2C. Install on reComputer J40/J4012
+
+Only a **Seeed reComputer J4012** (Jetson Orin NX 16GB, **P3767-0000**) on Seeed's
+**J401** carrier, image `admiral-recomputer-j40.img` matching this bundle's
+`boards.recomputer-j40.image` record. J4011 (NX 8GB), J3010/J3011 (Nano) and any
+other module SKU are refused. This programs the 64 MiB QSPI with the J401
+settings (HDMI pinmux, Seeed device trees, MB2 carrier-EEPROM read disabled; all
+pinned in `vendor-inputs/recomputer-j40/`) and the whole NVMe, not eMMC.
+
+The J401 has no NVIDIA-format carrier EEPROM, so the carrier cannot be proven from
+EEPROM data. The module (`3767-0000`), fuses and Secure Boot checks are exactly as
+strict as Orin NX. The carrier EEPROM result is recorded in the approval and must
+not decode as any NVIDIA carrier (3768, 3509, 3737, 4071 ...); you must also type a
+confirmation that you observed the Seeed unit ([rule](docs/reference.md#recomputer-j40)).
+
+1. On the existing unit, personally observe **Secure Boot Disabled** in UEFI or
+   `mokutil --sb-state`. Shut down before fitting/changing the NVMe (M.2 Key M).
+2. On the Ubuntu host:
+
+   ```sh
+   python3 orin.py check --board recomputer-j40 --bundle-pin "$BUNDLE_PIN"
+   ```
+
+   Enter the image's absolute path. Expect `Admiral image: full SHA256, both GPTs
+   and partition fingerprint verified.` Resolve host prerequisites using the
+   printed apt command after reviewing it, then repeat the check.
+3. Recovery wiring, per [Seeed's flashing guide][seeed-flash]: connect the host's
+   USB data cable to the J401's single **USB Type-C** port (device mode). On the
+   12-pin button header use a jumper wire to bridge **FC REC** (pin 3) and **GND**
+   (pin 2 or 4); pin 1 is PWR BTN, pin 5 SYS RET. Then connect the power adapter
+   to the reComputer.
+4. Confirm exactly one NVIDIA/APX endpoint; disconnect other NVIDIA USB devices:
+
+   ```sh
+   lsusb -d 0955:
+   ```
+
+   Seeed lists `0955:7323 NVidia Corp` for the Orin NX 16GB (`7423` NX 8GB, `7523`
+   Nano 8GB, `7623` Nano 4GB; those modules are refused later by the exact
+   module-identity check, not by this product ID). Leave the jumper fitted until
+   the installer completes. Whenever it asks you to re-enter Force Recovery,
+   power-cycle the unit (jumper still fitted) and press Enter; the installer
+   then waits for the board to enumerate again on the same USB port. Expect
+   this after every carrier check: the J401 has no NVIDIA carrier
+   EEPROM, and NVIDIA's tool leaves its flashing applet running after that read.
+5. Start installation with the explicit selector:
+
+   ```sh
+   sudo /usr/bin/python3 orin.py install --board recomputer-j40 --bundle-pin "$BUNDLE_PIN"
+   ```
+
+6. Follow [the prompts below](#3-answer-the-installation-prompts), including the
+   extra carrier confirmation (`OBSERVED SEEED RECOMPUTER J401 CARRIER`, typed only
+   after reviewing the printed carrier evidence), keeping the same unit/NVMe connected.
+7. After completion, [verify first boot](#4-boot-and-check).
+
+To capture only the carrier evidence on first contact, answer anything else at the
+carrier confirmation prompt: the tool has then done only RAM-only fuse/EEPROM reads
+and stops before RAM boot, any erase or any write.
+
+Seeed: [reComputer J4012 flash guide](https://wiki.seeedstudio.com/reComputer_J4012_Flash_Jetpack/).
+
 ## 3. Answer the installation prompts
 
 1. Type `I ACCEPT THE RISKS` to continue; this does not authorize an erase.
 2. Choose a **new** session directory, e.g.
-   `/opt/nvidia-flash-tools/session-thor-1` or `session-orin-1`. It must not exist.
+   `/opt/nvidia-flash-tools/session-thor-1`, `session-orin-1` or `session-j40-1`. It must not exist.
 3. Choose a download cache, e.g. `/opt/nvidia-flash-tools/downloads`. Read NVIDIA's
    terms and type `I ACCEPT NVIDIA LICENSE` if accepted. The installer downloads
    and authenticates the pinned BSP/rootfs; cached files are checked too.
@@ -132,6 +195,12 @@ Existing Orin NX users: see [the separate selector](docs/reference.md#orin-nx).
    unsupported fuses stop installation; do not change security to bypass a refusal.
 6. Press Enter when that one kit is in Force Recovery. The tool reads fresh
    identity/security evidence and performs RAM-only NVMe preflight before erase.
+   **reComputer J40/J4012 only:** the tool then prints the module decode and the
+   recorded carrier EEPROM (`cvb`) outcome (sha256 and decoded fields, or the exact
+   dump failure). If the outcome is refused it stops. Type
+   `OBSERVED SEEED RECOMPUTER J401 CARRIER` only if the unit in front of you is a
+   Seeed reComputer J40/J4012 with its original carrier; anything else aborts. The
+   evidence and this confirmation are part of the approval you review next.
 7. Review the displayed board, NVMe serial/capacity and approval. Type
    `ERASE FIRMWARE AND NVME EXPERIMENTAL` only for that hardware.
 8. Reenter Force Recovery when requested; leave power and USB connected.
@@ -167,6 +236,7 @@ Project code is proprietary; see [LICENSE](LICENSE). NVIDIA inputs retain their
 licenses. Built bundles include [OpenSSL](OPENSSL-LICENSE.txt) and
 [musl](MUSL-COPYRIGHT.txt) notices; see the development guide for toolchain details.
 
+[seeed-flash]: https://wiki.seeedstudio.com/reComputer_J4012_Flash_Jetpack/
 [downloads]: https://developer.nvidia.com/embedded/jetpack/downloads/archive-7.2.1
 [quickstart]: https://docs.nvidia.com/jetson/archives/r39.2/DeveloperGuide/IN/QuickStart.html
 [thor-hardware]: https://docs.nvidia.com/jetson/agx-thor-devkit/user-guide/latest/hardware_layout.html

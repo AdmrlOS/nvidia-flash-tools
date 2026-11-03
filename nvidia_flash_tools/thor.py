@@ -77,11 +77,24 @@ def security_observation(identity):
     return 'secure-boot-disabled-observed'
 
 
+def carrier_confirmation(identity):
+    """Identity-stage prompt for boards whose carrier has no NVIDIA-format EEPROM."""
+    from nvidia_flash_tools import carrier
+    print(carrier.describe(identity))
+    print('The Seeed J401 carrier has no NVIDIA carrier EEPROM, so the carrier cannot be proven from EEPROM data. '
+          'The cvb result above is recorded in, and bound to, the destructive approval.')
+    answer = input('Type ' + carrier.CONFIRMATION + ' only if the unit in front of you is a Seeed reComputer J40/J4012 '
+                   'with its original J401 carrier and you observed its labels: ').strip()
+    if answer != carrier.CONFIRMATION:
+        raise ValueError('explicit carrier confirmation declined; no carrier assumed, stop before persistent writes')
+    return answer
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', nargs='?', choices=('check', 'prepare', 'install'), default='install')
     parser.add_argument('--bundle-pin', help='independent operator-provided engineering-manifest SHA256; otherwise prompted')
-    parser.add_argument('--board', choices=('thor','orin','orin-nx'), default='thor')
+    parser.add_argument('--board', choices=('thor','orin','orin-nx','recomputer-j40'), default='thor')
     args = parser.parse_args(argv)
     board = args.board
     print(board.upper() + ': Not tested on physical devices. Test-key images; exact reference kit only.')
@@ -114,7 +127,8 @@ def main(argv=None):
                          accept_nvidia_license=False, nvidia_archive=None, sample_rootfs=None,
                          helper=ROOT/'recovery-io', journal=destination/'install-journal.json',
                          guided_approval=approval, experimental_first_test=consent,
-                         security_observation=security_observation)
+                         security_observation=security_observation,
+                         carrier_confirmation=carrier_confirmation)
     from nvidia_flash_tools.download import guided
     guided(ns, release)
     if args.action == 'prepare':

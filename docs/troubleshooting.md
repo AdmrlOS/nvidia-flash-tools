@@ -9,6 +9,7 @@
 | Writable/symlink/foreign-owned path refused | Use a fresh root-owned extraction/session under `/opt`, with non-group/other-writable ancestors. |
 | Unsupported module/carrier/fuses or unknown Secure Boot | Stop and confirm labels/security with the operator. Do not invent metadata or enroll keys. |
 | USB/SSH/ADB timeout or interrupted write | Preserve the session and STOP message, restore stable power, reenter recovery and review the failure before retrying. Do not reuse a mutated prepared tree. |
+| reComputer J40/J4012: `recomputer-j40 carrier refused` or `board changed during carrier EEPROM read` | The carrier EEPROM decoded as an NVIDIA carrier, had an unexpected size, or the board left recovery after the dump. Stop; keep the printed evidence (sha256, decoder output, return code) and see the [carrier rule](reference.md#recomputer-j40). Do not substitute another board selector. |
 | Verified write but no boot | Capture serial/UEFI output, confirm image/board and use stock recovery if necessary. |
 
 Logs can contain ECIDs, disk serials and local paths. Share only reviewed/redacted
@@ -70,4 +71,4 @@ sudo ./flash.sh jetson-agx-orin-devkit internal
 For stock NVMe, follow the respective NVIDIA
 [Thor](https://docs.nvidia.com/jetson/archives/r39.2/DeveloperGuide/SD/FlashingSupportJetsonThor.html)
 or [Orin](https://docs.nvidia.com/jetson/archives/r39.2/DeveloperGuide/SD/FlashingSupport.html)
-external-storage guide. Do not translate commands between boards.
+external-storage guide. Do not translate commands between boards. For a Seeed reComputer J40/J4012 use [Seeed's flashing guide](https://wiki.seeedstudio.com/reComputer_J4012_Flash_Jetpack/) with its own Linux_for_Tegra.

@@ -23,8 +23,10 @@ class OrinTests(unittest.TestCase):
         data = b'NVDA-generated-signature-fixture\0'
         (self.root/'bct.bin').write_bytes(data)
         self.index = self.root/'flash.idx'
-        self.rows = [['0','3:0:BCT','0','1048576','bct.bin',str(len(data)),'0',hashlib.sha1(data).hexdigest()],
-                     ['1','3:0:A_cpu-bootloader','1048576','1048576','','0','0','']]
+        # R39.2.1 tegraparser leaves filename, length and sha1 empty for rows
+        # without a payload (observed on a J4012 signed output).
+        self.rows = [['0','3:0:BCT','0','1048576','bct.bin',str(len(data)),'fixed-<reserved>-1',hashlib.sha1(data).hexdigest()],
+                     ['1','3:0:A_cpu-bootloader','1048576','1048576','','','fixed-<reserved>-2','']]
         self.save()
 
     def tearDown(self):
@@ -43,15 +45,26 @@ class OrinTests(unittest.TestCase):
         argv=command(vendor,'rcmboot')
         self.assertEqual(argv[-2:],['--instance','1-2'])
         for raw in ('./tegraflash.py --chip 0x23 --cmd "rcmboot; flash"',
-                    './tegraflash.py --chip 0x23 --securedev --cmd rcmboot',
+                    './tegraflash.py --chip 0x23 --securedev --key k.pem --cmd rcmboot',
                     './l4t_initrd_flash.sh --cmd rcmboot'):
             path.write_text(raw)
             with self.assertRaises(ValueError): command(vendor,'rcmboot')
+        # R39.2.1 T234 RCM boot is odmsign's pre-signed path; only there.
+        path.write_text('./tegraflash.py --chip 0x23 --securedev --cmd rcmboot')
+        self.assertIn('--securedev', command(vendor,'rcmboot'))
+        path.write_text('./tegraflash.py --chip 0x23 --securedev --cmd "secureflash;reboot"')
+        with self.assertRaisesRegex(ValueError,'secured/implicit'): command(vendor,'secureflash;reboot')
 
     def test_exact_allowlist(self):
         self.assertEqual(BOARDS['orin'],('3701','0000','3737','0000','23'))
         self.assertEqual(BOARDS['orin-nx'],('3767','0000','3768','0000','23'))
         self.assertEqual(Vendor(self.root,'orin-nx','1-2',runner=lambda:None).alias,'jetson-orin-nano-devkit-super')
+        # reComputer J4012: same module/chip as orin-nx, but our own flash configuration
+        # and no NVIDIA carrier ID (carrier rule in nvidia_flash_tools.carrier).
+        self.assertEqual(BOARDS['recomputer-j40'][:2],('3767','0000'))
+        self.assertEqual(BOARDS['recomputer-j40'][4],'23')
+        self.assertNotEqual(BOARDS['recomputer-j40'][2:4],BOARDS['orin-nx'][2:4])
+        self.assertEqual(Vendor(self.root,'recomputer-j40','1-2',runner=lambda:None).alias,'recomputer-j40-qspi')
 
     def test_bct_full_controller_plan(self):
         contract,data = orin_firmware.plan(self.index,self.xml,self.xml)
@@ -74,6 +87,12 @@ class OrinTests(unittest.TestCase):
         self.rows[0][4] = '../bct.bin'; self.save()
         with self.assertRaises(ValueError): orin_firmware.plan(self.index,self.xml,self.xml)
 
+    def test_empty_length_only_for_payloadless_rows(self):
+        self.rows[0][5] = ''; self.save()    # a payload without a length
+        with self.assertRaisesRegex(ValueError, 'partition or range'): orin_firmware.plan(self.index,self.xml,self.xml)
+        self.rows[0][5] = '33'; self.rows[1][7] = 'abc'; self.save()   # half-empty row
+        with self.assertRaisesRegex(ValueError, 'partition or range'): orin_firmware.plan(self.index,self.xml,self.xml)
+
     def test_reject_duplicate_and_overlap(self):
         self.rows[1][1] = '3:0:BCT'; self.save()
         with self.assertRaises(ValueError): orin_firmware.plan(self.index,self.xml,self.xml)
@@ -95,12 +114,15 @@ class OrinTests(unittest.TestCase):
         with patch.object(transport,'bind'):
             transport.push(self.root/'bct.bin','/tmp/payload')
             transport.shell('/bin/true')
+            transport.shell('/bin/bash','/tmp/x/executor.sh',timeout=3600)
         for argv,kwargs in calls:
             self.assertIn('StrictHostKeyChecking=yes',argv)
             self.assertIn('HostKeyAlias=admiral-orin-recovery',argv)
             self.assertIn('-T',argv)
             self.assertEqual(argv[:3],['/usr/bin/sshpass','-p','root'])
         self.assertIn('stdin',calls[0][1])
+        self.assertNotIn('timeout',calls[1][1])          # execute()'s 120 s default
+        self.assertEqual(calls[2][1],{'timeout':3600})
 
     def test_actual_vendor_method_against_regular_file(self):
         source=vendor_path()/'tools/kernel_flash/l4t_flash_from_kernel.sh'
@@ -139,17 +161,17 @@ class OrinTests(unittest.TestCase):
             if not path.is_symlink(): path.chmod(path.stat().st_mode & ~0o022)
         contract,expected=orin_firmware.plan(signed/'flash.idx',signed/'flash.xml.tmp',stock)
         for corrupt in (False,True):
-            calls=[]; files={}; offset=[0]
+            calls=[]; files={}; offset=[0]; timeouts=[]
             class Transport:
                 def bind(self): calls.append('bind')
                 def push(self,source,target): files[target]=Path(source).read_bytes()
-                def shell(self,*args):
+                def shell(self,*args,**kwargs):
                     if args[-1]=='br_cid': return b'BR_CID: 0x0000000000000000000000123\n'
                     if args[0]=='/bin/cat' and args[1].startswith('/sys/class/mtd/'):
-                        return {'size':b'67108864','erasesize':b'65536','type':b'nor'}[Path(args[1]).name]
+                        return {'size':b'67108864','erasesize':b'4096','type':b'nor'}[Path(args[1]).name]  # observed on a J4012
                     if args[0]=='/bin/mktemp': return b'/tmp/admiral-spi-abcdefgh\n'
                     if args[0]=='/usr/bin/sha256sum': return (hashlib.sha256(files[args[1]]).hexdigest()+'  '+args[1]+'\n').encode()
-                    if args[0]=='/bin/bash': calls.append('erase-executor'); return b''
+                    if args[0]=='/bin/bash': calls.append('erase-executor'); timeouts.append(kwargs.get('timeout')); return b''
                     if args[0]=='/usr/sbin/mtd_debug': offset[0]=int(args[3]); return b''
                     if args[0]=='/bin/cat':
                         data=expected[offset[0]:offset[0]+4194304]
@@ -168,6 +190,32 @@ class OrinTests(unittest.TestCase):
                 self.assertEqual(vendor.firmware_readback['sha256'],contract['sha256'])
                 self.assertEqual(vendor.firmware_readback['size'],67108864)
             self.assertEqual(calls.count('erase-executor'),1)
+            self.assertGreaterEqual(timeouts[0],1800)   # whole-device NOR erase+write takes minutes
+
+    def test_unknown_spi_geometry_refused_before_staging(self):
+        from types import SimpleNamespace
+        contract,_=orin_firmware.plan(self.index,self.xml,self.xml)
+        for name,value in (('erasesize',b'262144'),('size',b'33554432'),('type',b'nand')):
+            with self.subTest(name=name):
+                geometry={'size':b'67108864','erasesize':b'4096','type':b'nor',name:value}
+                calls=[]
+                class Transport:
+                    def bind(self): pass
+                    def shell(self,*args,**kwargs):
+                        if args[-1]=='br_cid': return b'BR_CID: 0x0000000000000000000000123\n'
+                        if args[0]=='/bin/cat': return geometry[Path(args[1]).name]
+                        calls.append(args); return b''
+                tree=self.root/'tree-g'; signed=tree/'bootloader/signed'; signed.mkdir(parents=True,exist_ok=True)
+                stock=tree/'bootloader/generic/cfg/flash_t234_qspi.xml'; stock.parent.mkdir(parents=True,exist_ok=True)
+                import shutil
+                for original,target in ((self.index,signed/'flash.idx'),(self.xml,signed/'flash.xml.tmp'),(self.xml,stock),(self.root/'bct.bin',signed/'bct.bin')):
+                    shutil.copyfile(original,target)
+                vendor=Vendor(tree,'orin','1-2',runner=lambda:None)
+                vendor.workspace=SimpleNamespace(root=self.root,validate=lambda:None)
+                vendor.orin_plan=contract; vendor.approved_identity={'ecid':'0x123'}
+                with self.assertRaisesRegex(ValueError,'unexpected Orin SPI geometry/type: '+name):
+                    orin_firmware.provision(vendor,Transport())
+                self.assertEqual(calls,[])   # no scratch dir, push, erase or write
 
     def test_vendor_function_extraction_no_main(self):
         path=self.root/'nvidia_flash_tools.vendor.sh'

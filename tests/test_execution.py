@@ -4,6 +4,8 @@ import argparse
 import hashlib
 import io
 import json
+import stat
+import time
 import os
 from pathlib import Path
 import struct
@@ -67,6 +69,78 @@ class ExecutionTests(unittest.TestCase):
         w.validate()
         self.assertEqual(w.run(['/bin/true']), '')
 
+    def cached_workspace(self, name, cache, bsp_files=None):
+        files = bsp_files or {'Linux_for_Tegra/apply_binaries.sh': b'#!/bin/sh\n# -I lbzip2\n# -I lbzip2\nmkdir -p rootfs/usr/lib\nprintf generated > rootfs/usr/lib/applied\n',
+                              'Linux_for_Tegra/vendor.py': b'# authenticated'}
+        bsp, b = self.archive(name + '-bsp.tar', files)
+        rootfs, r = self.archive(name + '-rootfs.tar', {'etc/release': b'pinned'})
+        w = Workspace(self.root / name, owner=os.geteuid())
+        self.addCleanup(w.close)
+        calls = []
+        real = w.runner
+        w.runner = lambda argv, **k: (calls.append(argv), real(argv, **k))[1]
+        w.prepare(bsp, rootfs, {'archive': b, 'sample_rootfs': r}, cache=cache)
+        return w, calls
+
+    def test_prepared_cache_miss_stores_and_hit_skips_preparation(self):
+        cache = self.root / 'prepared'
+        first, calls = self.cached_workspace('one', cache)
+        self.assertEqual([c[0] for c in calls], ['./apply_binaries.sh'])
+        entries = [p for p in cache.iterdir()]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(json.loads((entries[0]/'manifest.json').read_text())['tree'], first.expected)
+        second, calls = self.cached_workspace('two', cache)
+        self.assertEqual(calls, [])                       # no vendor step re-run
+        self.assertEqual(second.expected, first.expected)
+        self.assertEqual(second.inputs, first.inputs)
+        self.assertEqual((second.tree/'rootfs/usr/lib/applied').read_bytes(), b'generated')
+        second.validate()
+        self.assertEqual(json.loads((second.root/'preparation-manifest.json').read_text())['stage'], 'prepared-from-cache')
+
+    def test_prepared_cache_tamper_is_refused(self):
+        cache = self.root / 'prepared'
+        self.cached_workspace('one', cache)
+        entry = next(cache.iterdir())
+        (entry/'Linux_for_Tegra/rootfs/usr/lib/applied').write_bytes(b'changed')
+        with self.assertRaisesRegex(ValueError, 'differs from its manifest'):
+            self.cached_workspace('two', cache)
+
+    def test_prepared_cache_key_follows_the_pins(self):
+        cache = self.root / 'prepared'
+        self.cached_workspace('one', cache)
+        _, calls = self.cached_workspace('two', cache, {'Linux_for_Tegra/apply_binaries.sh': b'#!/bin/sh\n# -I lbzip2\n# -I lbzip2\ntrue\n',
+                                                        'Linux_for_Tegra/vendor.py': b'# other release'})
+        self.assertEqual([c[0] for c in calls], ['./apply_binaries.sh'])
+        self.assertEqual(len(list(cache.iterdir())), 2)
+
+    def test_seal_modes_leaves_correct_modes_untouched(self):
+        w = self.workspace()
+        target = w.tree / 'vendor.py'
+        before = target.stat().st_ctime_ns
+        time.sleep(0.02)
+        w._seal_modes()
+        self.assertEqual(target.stat().st_ctime_ns, before)   # no chmod, digest cache stays valid
+        os.chmod(target, 0o666)
+        w._seal_modes()
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o644)
+
+    def test_flash_sh_may_never_write_implicitly(self):
+        w = self.workspace()
+        argv = ['./flash.sh', '--no-systemimg', '--sign', '--qspi-only', '--usb-instance', '1-2', 'a', 'internal']
+        for run in (w.run, w.run_tolerated):
+            with self.assertRaisesRegex(ValueError, 'would write|may not be tolerated'):
+                run(argv)
+        with self.assertRaisesRegex(ValueError, 'would write'):
+            w.run(['./flash.sh', '--sign', '--read-info', '1-2', 'a', 'internal'])
+        w.validate()   # refused before execution: the session stays authorized
+
+    def test_vendor_commands_get_real_user_for_flash_sh_root_check(self):
+        # flash.sh refuses unless $USER is root; the clean ENV must name the euid's user.
+        import pwd
+        w = self.workspace()
+        user = pwd.getpwuid(os.geteuid()).pw_name
+        self.assertEqual(w.run(['/bin/sh', '-c', 'printf "%s %s" "$USER" "$LOGNAME"']), user + ' ' + user)
+
     def test_extra_shadow_module_refused_before_subprocess(self):
         w = self.workspace()
         (w.tree/'json.py').write_text('attacker')
@@ -93,6 +167,105 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual((w.tree/'rootfs/bin/tool').read_bytes(),b'x')
         self.assertEqual((w.tree/'rootfs/usr/bin/alias').stat().st_nlink,1)
         self.assertIn('rootfs/bin/tool',snapshot(w.tree,os.geteuid()))
+
+    def test_lbzip2_stream_extracts_bz2_with_links_and_refuses_corruption(self):
+        if not Path('/usr/bin/lbzip2').is_file():
+            self.skipTest('lbzip2 not installed')
+        w=self.workspace()
+        archive=self.root/'links.tar.bz2'
+        with tarfile.open(archive,'w:bz2') as t:
+            f=tarfile.TarInfo('usr/bin/tool');f.size=1;t.addfile(f,io.BytesIO(b'x'))
+            l=tarfile.TarInfo('bin/tool');l.type=tarfile.SYMTYPE;l.linkname='/usr/bin/tool';t.addfile(l)
+            l=tarfile.TarInfo('usr/bin/alias');l.type=tarfile.LNKTYPE;l.linkname='usr/bin/tool';t.addfile(l)
+        record={'size':archive.stat().st_size,'sha256':sha256(archive)}
+        with patch('nvidia_flash_tools.workspace.subprocess.Popen',wraps=subprocess.Popen) as popen:
+            w._archive(archive,record,'rootfs.tar',w.tree/'rootfs')
+        self.assertEqual(popen.call_args.args[0][:2],['/usr/bin/lbzip2','-dc'])
+        self.assertEqual((w.tree/'rootfs/bin/tool').read_bytes(),b'x')
+        self.assertEqual((w.tree/'rootfs/usr/bin/alias').read_bytes(),b'x')
+        self.assertEqual((w.tree/'rootfs/usr/bin/alias').stat().st_nlink,1)
+        # A pinned but truncated bz2 stream must fail, not extract a prefix.
+        broken=self.root/'broken.tar.bz2'
+        broken.write_bytes(archive.read_bytes()[:-20])
+        record={'size':broken.stat().st_size,'sha256':sha256(broken)}
+        with self.assertRaises((ValueError,tarfile.TarError,EOFError,OSError)):
+            w._archive(broken,record,'rootfs.tar',w.tree/'other')
+
+    def test_pinned_rootfs_member_subset_extracts_only_listed_members(self):
+        w=self.workspace()
+        archive=self.root/'subset.tar'
+        with tarfile.open(archive,'w') as t:
+            for name in ('usr','usr/bin','usr/share'):
+                d=tarfile.TarInfo(name);d.type=tarfile.DIRTYPE;d.mode=0o755;t.addfile(d)
+            for name in ('usr/bin/tool','usr/bin/other','usr/share/big'):
+                f=tarfile.TarInfo(name);f.size=1;t.addfile(f,io.BytesIO(b'x'))
+            l=tarfile.TarInfo('bin');l.type=tarfile.SYMTYPE;l.linkname='usr/bin';t.addfile(l)
+            h=tarfile.TarInfo('usr/bin/alias');h.type=tarfile.LNKTYPE;h.linkname='usr/bin/other';t.addfile(h)
+        record={'size':archive.stat().st_size,'sha256':sha256(archive)}
+        keep=frozenset({'bin','usr','usr/bin','usr/bin/tool'})
+        w._archive(archive,record,'rootfs.tar',w.tree/'subset',keep)
+        names={str(p.relative_to(w.tree/'subset')) for p in (w.tree/'subset').rglob('*')}
+        self.assertEqual(names,set(keep))
+        self.assertEqual(w.inputs['rootfs.tar']['members']['count'],4)
+        with self.assertRaisesRegex(ValueError,'missing from archive'):
+            w._archive(archive,record,'s2.tar',w.tree/'s2',keep|{'usr/bin/absent'})
+        with self.assertRaisesRegex(ValueError,'hardlinks outside'):
+            w._archive(archive,record,'s3.tar',w.tree/'s3',keep|{'usr/bin/alias'})
+
+    def test_recovery_dsa_host_key_line_removed_exactly_once(self):
+        from nvidia_flash_tools import workspace as ws
+        w=self.workspace()
+        script=w.tree/ws.RECOVERY_IMAGE_SCRIPT; script.parent.mkdir(parents=True)
+        keep='\tssh-keygen -t ed25519 -N "" -f "${_initrd_dir}/${ssh_config_dir}/ssh_host_ed25519_key" >/dev/null 2>&1;check_error\n'
+        script.write_text('#!/bin/bash\n'+ws.RECOVERY_DSA_KEYGEN+keep); script.chmod(0o755)
+        w._prepare_recovery_host_keys()
+        self.assertEqual(script.read_text(),'#!/bin/bash\n'+keep)
+        self.assertEqual(script.stat().st_mode & 0o777,0o755)
+        self.assertIn('recovery_dsa_adapter',w.inputs)
+        for text in ('#!/bin/bash\n'+keep, '#!/bin/bash\n'+ws.RECOVERY_DSA_KEYGEN*2,
+                     '#!/bin/bash\n'+ws.RECOVERY_DSA_KEYGEN+'echo HostKey /etc/ssh/ssh_host_dsa_key\n'):
+            script.write_text(text)
+            with self.assertRaisesRegex(ValueError,'DSA host key site changed'):
+                w._prepare_recovery_host_keys()
+        script.unlink(); w._prepare_recovery_host_keys()   # absent script (other BSPs): no-op
+
+    def test_snapshot_cache_skips_unchanged_reads_and_detects_writes(self):
+        from nvidia_flash_tools import workspace
+        tree=self.root/'tree'; tree.mkdir()
+        target=tree/'file'; target.write_bytes(b'aaaa')
+        with patch.object(workspace,'RACY_SECONDS',-3600):
+            first=snapshot(tree,os.geteuid())
+            with patch('nvidia_flash_tools.workspace.open',create=True,side_effect=AssertionError('reread unchanged file')):
+                self.assertEqual(snapshot(tree,os.geteuid()),first)
+            # Same size, mtime restored: ctime still moves, so the change is seen.
+            info=target.stat()
+            import time; time.sleep(0.05)  # leave the coarse timestamp tick
+            target.write_bytes(b'bbbb')
+            os.utime(target,ns=(info.st_atime_ns,info.st_mtime_ns))
+            self.assertNotEqual(snapshot(tree,os.geteuid()),first)
+
+    def test_snapshot_link_shortcut_still_catches_new_and_retargeted_escapes(self):
+        tree=self.root/'tree'; (tree/'rootfs/usr').mkdir(parents=True)
+        (tree/'rootfs/usr/lib').symlink_to('../usr')
+        (tree/'inside').symlink_to('rootfs/usr')
+        snapshot(tree,os.geteuid()); snapshot(tree,os.geteuid())   # verified, then shortcut
+        (tree/'out').symlink_to('../../etc')
+        with self.assertRaisesRegex(ValueError,'escapes'): snapshot(tree,os.geteuid())
+        (tree/'out').unlink(); snapshot(tree,os.geteuid())
+        # A link whose target changes is a different link map entry.
+        (tree/'inside').unlink(); (tree/'inside').symlink_to('rootfs/../../outside')
+        with self.assertRaisesRegex(ValueError,'escapes'): snapshot(tree,os.geteuid())
+        # A rootfs-absolute link stays inside the rootfs boundary.
+        (tree/'inside').unlink(); (tree/'rootfs/abs').symlink_to('/usr/lib')
+        self.assertEqual(snapshot(tree,os.geteuid())['rootfs/abs'],['link','/usr/lib'])
+
+    def test_snapshot_does_not_cache_racy_fresh_files(self):
+        from nvidia_flash_tools import workspace
+        tree=self.root/'tree'; tree.mkdir()
+        (tree/'file').write_bytes(b'aaaa')
+        workspace._DIGESTS.clear()
+        snapshot(tree,os.geteuid())
+        self.assertEqual(workspace._DIGESTS,{})
 
     def test_pinned_compressor_adapter_and_changed_sites_refused(self):
         w=self.workspace()
