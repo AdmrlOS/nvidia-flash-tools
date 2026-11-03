@@ -42,11 +42,21 @@ def authenticate(manifest, pin, signature=None, public_key=None):
     return data
 
 
+HOST_RELEASES = ("22.04", "24.04", "26.04")
+
+
+def packages(version_id):
+    # Ubuntu 26.04 dropped qemu-user-static; qemu-user-binfmt provides it.
+    if version_id == "26.04":
+        return ["qemu-user-binfmt" if p == "qemu-user-static" else p for p in PACKAGES]
+    return list(PACKAGES)
+
+
 def prerequisites():
     release = platform.freedesktop_os_release()
     problems = []
-    if release.get("ID") != "ubuntu" or release.get("VERSION_ID") not in ("22.04", "24.04"):
-        problems.append("use a native Ubuntu 22.04/24.04 host")
+    if release.get("ID") != "ubuntu" or release.get("VERSION_ID") not in HOST_RELEASES:
+        problems.append("use a native Ubuntu 22.04/24.04/26.04 host")
     if Path('/proc/sys/fs/binfmt_misc/WSLInterop').exists() or 'microsoft' in platform.release().lower():
         problems.append('WSL is not a qualified physical host')
     if shutil.which('systemd-detect-virt'):
@@ -59,7 +69,7 @@ def prerequisites():
         problems.append("use x86_64: pinned NVIDIA host tools are x86-64")
     if shutil.which("dpkg-query"):
         missing = []
-        for package in PACKAGES:
+        for package in packages(release.get("VERSION_ID")):
             try:
                 if run(["dpkg-query", "-W", "-f=${Status}", package]).strip() != "install ok installed":
                     missing.append(package)

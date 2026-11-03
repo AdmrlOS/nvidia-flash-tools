@@ -11,7 +11,7 @@ checks fuses and does not burn fuses, enroll keys or change security settings.
 
 ## 1. Set up the Ubuntu host
 
-Use a separate **physical Ubuntu 22.04/24.04 x86_64 PC**, at least 40 GiB free,
+Use a separate **physical Ubuntu 22.04/24.04/26.04 x86_64 PC**, at least 40 GiB free,
 internet access and a direct USB data cable. Flashing from macOS, ARM, a VM, WSL
 or a container is not supported. Python uses the standard library; no pip install.
 

@@ -95,7 +95,7 @@ def main(argv=None):
     release = bundle(ROOT, pin)
     issues = prerequisites()
     print('Native Ubuntu PC prerequisite report (no package installation performed):')
-    print('\n'.join(issues) if issues else 'Ubuntu 22.04/24.04 physical x86_64 host prerequisites present.')
+    print('\n'.join(issues) if issues else 'Ubuntu 22.04/24.04/26.04 physical x86_64 host prerequisites present.')
     if args.action == 'check':
         verify_image(Path(input('Admiral image file: ').strip()).expanduser(), release, board)
         print('Offline check complete; hardware remains unverified.')

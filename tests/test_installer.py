@@ -121,6 +121,25 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(any("x86_64" in i for i in issues))
         self.assertTrue(any("dpkg-query" in i for i in issues))
 
+    def test_ubuntu_2604_uses_qemu_user_binfmt(self):
+        from nvidia_flash_tools.install import packages
+        self.assertIn("qemu-user-static", packages("24.04"))
+        resolute = packages("26.04")
+        self.assertNotIn("qemu-user-static", resolute)
+        self.assertIn("qemu-user-binfmt", resolute)
+        self.assertEqual(len(resolute), len(packages("24.04")))
+        seen = []
+        def query(args, **_):
+            seen.append(args[-1])
+            return "install ok installed"
+        with patch("nvidia_flash_tools.install.platform.freedesktop_os_release", return_value={"ID": "ubuntu", "VERSION_ID": "26.04"}), \
+                patch("nvidia_flash_tools.install.platform.machine", return_value="x86_64"), \
+                patch("nvidia_flash_tools.install.shutil.which", side_effect=lambda name: None if name == "systemd-detect-virt" else "/usr/bin/" + name), \
+                patch("nvidia_flash_tools.install.run", side_effect=query):
+            issues = prerequisites()
+        self.assertEqual(seen, resolute)
+        self.assertFalse(any("Ubuntu" in i or "packages" in i for i in issues))
+
     def test_hash_truncation_refused(self):
         with self.assertRaisesRegex(ValueError, "size/SHA256"):
             check_artifact(self.image, {"size": 1, "sha256": "0" * 64})

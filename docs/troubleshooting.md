@@ -46,6 +46,12 @@ sudo ./tools/l4t_flash_prerequisites.sh
 sudo ./apply_binaries.sh
 ```
 
+On Ubuntu 26.04, `l4t_flash_prerequisites.sh` stops because `qemu-user-static`
+no longer exists and `tar` needs `bzip2`. Install `bzip2` and NVIDIA's list with
+`qemu-user-binfmt` in place of `qemu-user-static` (the installer's host report
+prints the exact command). QEMU is only used for `--extra-pkg` installs, which
+this installer never requests.
+
 Enter the exact kit's Force Recovery mode. Choose **one** stock command, not an
 Admiral image installation:
 
