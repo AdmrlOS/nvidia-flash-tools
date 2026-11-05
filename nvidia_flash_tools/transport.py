@@ -9,6 +9,9 @@ import hashlib
 from pathlib import Path
 from nvidia_flash_tools.security import ENV
 
+# Seconds between remote ECID re-reads during one Orin SSH helper session.
+REMOTE_ECID_INTERVAL = 60
+
 
 def execute(argv, timeout=120, **kwargs):
     if not Path(argv[0]).is_absolute():
@@ -323,8 +326,16 @@ class SSH:
             process = subprocess.Popen(self._command('exec '+shlex.join(args)), env=dict(ENV),cwd='/',
                                        stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
                                        close_fds=True,bufsize=0)
+            # The local USB binding (same physical device and interface) is
+            # checked on every request. The remote ECID read is a new SSH login
+            # (~5-7 s): at most once a minute, plus on open. The helper runs in
+            # this one long-lived SSH session, which ends if the board goes away.
+            last_remote = [time.monotonic()]
             def binding():
-                self.bind(); check_remote_ecid(self,self.ecid)
+                self.bind()
+                if time.monotonic() - last_remote[0] >= REMOTE_ECID_INTERVAL:
+                    check_remote_ecid_retrying(self, self.ecid)
+                    last_remote[0] = time.monotonic()
             result = NativeSession(process,identity,binding)
             result.cleanup = lambda: self.shell('/bin/rm','-rf',directory)
             return result
@@ -342,3 +353,19 @@ def check_remote_ecid(transport, ecid):
     expected = int(ecid, 16) & ((1 << 100) - 1)
     if not match or int(match[1], 16) != expected:
         raise ValueError('RAM recovery ECID mismatch or unsupported fuse-helper output')
+
+
+def check_remote_ecid_retrying(transport, ecid, pauses=(2, 5), sleep=time.sleep):
+    """Re-read the board ID over a fresh SSH login while a helper session is open.
+
+    A login that fails (dropped preauth, timeout) proves nothing either way, so it
+    is retried; it must not tear down the exclusive helper session. A completed
+    read with the wrong ID (ValueError) is never retried.
+    """
+    for pause in (*pauses, None):
+        try:
+            return check_remote_ecid(transport, ecid)
+        except subprocess.SubprocessError:
+            if pause is None:
+                raise
+            sleep(pause)

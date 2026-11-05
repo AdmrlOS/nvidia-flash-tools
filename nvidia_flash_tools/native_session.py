@@ -6,6 +6,15 @@ import time
 import os
 
 
+_ZERO_DIGESTS = {}
+
+
+def _zero_digest(length):
+    if length not in _ZERO_DIGESTS:
+        _ZERO_DIGESTS[length] = hashlib.sha256(bytes(length)).digest()
+    return _ZERO_DIGESTS[length]
+
+
 class NativeSession:
     def __init__(self, process, identity, check_binding):
         self.process, self.expected, self.check_binding = process, dict(identity), check_binding
@@ -97,13 +106,20 @@ class NativeSession:
         self.operation_deadline = min(self.total_deadline, time.monotonic() + 120)
         if time.monotonic() >= self.total_deadline: raise TimeoutError("native install runtime exceeded")
         self.identity()
-        if (op not in (b'R', b'W') or offset < 0 or offset % 512 or
+        if (op not in (b'R', b'W', b'Z', b'H') or offset < 0 or offset % 512 or
                 not 0 < length <= 4194304 or length % 512 or
                 offset + length > self.expected['capacity']):
             raise ValueError('native request outside bounds')
         if op == b'W' and len(data) != length:
             raise ValueError('native write length mismatch')
-        digest = hashlib.sha256(data).digest() if data else bytes(32)
+        if op != b'W' and data:
+            raise ValueError('native request carries no payload')
+        if op == b'W':
+            digest = hashlib.sha256(data).digest()
+        elif op == b'Z':
+            digest = _zero_digest(length)   # the board fills; the hash states intent
+        else:
+            digest = bytes(32)
         self._write(struct.pack('>cQI32s', op, offset, length, digest) + data)
         count, expected = struct.unpack('>I32s', self._read(36))
         if count != (length if op == b'R' else 32):
@@ -111,7 +127,7 @@ class NativeSession:
         payload = self._read(count)
         if hashlib.sha256(payload).digest() != expected:
             raise ValueError('native response authentication failed')
-        if op == b'W' and payload != digest:
+        if op in (b'W', b'Z') and payload != digest:
             raise ValueError('native write readback mismatch')
         return payload
 
@@ -121,8 +137,13 @@ class NativeSession:
     def write(self, offset, data):
         self.request(b'W', offset, len(data), data)
 
+    def zero(self, offset, length):
+        """Zero-fill on the board: no payload on the wire, readback hash returned."""
+        self.request(b'Z', offset, length)
+
     def hash(self, offset, length):
-        return hashlib.sha256(self.read(offset, length)).hexdigest()
+        """SHA256 of the range, computed on the board (32 bytes on the wire)."""
+        return self.request(b'H', offset, length).hex()
 
     def unlock(self):
         if not self.closed:

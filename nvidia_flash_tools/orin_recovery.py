@@ -71,7 +71,8 @@ def _fresh_eeproms_unverified_carrier(vendor, bl, argv, index, fuses, outputs):
     before its recovery reboot, leaving the MB2 applet running. The mandatory
     fuse and module reads therefore run first and end with their own recovery
     reboot; the carrier dump runs last, and its failure is recorded verbatim.
-    Vendor.probe then has the operator power-cycle back into recovery.
+    Vendor.probe then has the operator power-cycle back into recovery. Only the
+    first probe of a session dumps the carrier (see Vendor.carrier_record).
     """
     import stat
     module = list(argv)
@@ -81,6 +82,11 @@ def _fresh_eeproms_unverified_carrier(vendor, bl, argv, index, fuses, outputs):
     info = (bl/outputs['cvm.bin']).lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != 256:
         raise ValueError('fresh EEPROM must be regular exact 256 bytes')
+    if getattr(vendor, 'carrier_record', None) is not None:
+        # Later probes in one session: the carrier dump was recorded, table-checked
+        # and operator-confirmed by the first probe. Repeating it only re-leaves the
+        # applet running (one more power cycle); fuses, cvm and UID stay fresh.
+        return outputs
     carrier = list(argv)
     carrier[index] = 'dump eeprom cvb '+outputs['cvb.bin']+'; reboot recovery'
     returncode, output = vendor.run_tolerated(['/usr/bin/python3',*carrier],cwd=bl)

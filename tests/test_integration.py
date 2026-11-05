@@ -31,6 +31,62 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn('No problems found', subprocess.check_output(['sgdisk', '-v', self.dest], text=True))
         self.assertEqual(json.loads((self.root / 'journal').read_text())['stage'], 'verified-pending-hardware-acceptance')
 
+    def test_zero_chunks_are_filled_on_the_disk_side_and_proven(self):
+        from nvidia_flash_tools.image import CHUNK
+        with self.dest.open('r+b') as stream:            # stale contents everywhere
+            stream.write(b'\xaa' * (32 * 1024 * 1024))
+        disk = FileDisk(self.dest)
+        with patch.object(disk, 'zero', wraps=disk.zero) as zero:
+            self.write(disk)
+        image = self.image.read_bytes()
+        zero_chunks = [o for o in range(0, len(image), CHUNK) if not any(image[o:o + CHUNK])]
+        self.assertTrue(zero_chunks)
+        self.assertEqual([c.args[0] for c in zero.call_args_list], zero_chunks)
+        written = self.dest.read_bytes()
+        for offset in zero_chunks:
+            self.assertEqual(written[offset:offset + CHUNK], bytes(CHUNK))
+        self.assertIn('No problems found', subprocess.check_output(['sgdisk', '-v', self.dest], text=True))
+
+    def test_failed_session_is_reopened_and_the_write_completes(self):
+        disk = FileDisk(self.dest)
+        real, calls, opened = disk.write, [], []
+        def flaky(offset, data):
+            calls.append(offset)
+            if len(calls) == 2:
+                raise ValueError('exclusive recovery session lost')
+            return real(offset, data)
+        disk.reopen = lambda: opened.append(len(calls))
+        with patch.object(disk, 'write', side_effect=flaky):
+            self.write(disk)
+        self.assertEqual(opened, [2])                 # exactly one fresh session
+        self.assertEqual(json.loads((self.root / 'journal').read_text())['stage'], 'verified-pending-hardware-acceptance')
+        self.assertIn('No problems found', subprocess.check_output(['sgdisk', '-v', self.dest], text=True))
+
+    def test_reopen_refusal_stops_the_write(self):
+        disk = FileDisk(self.dest)
+        def gone():
+            raise ValueError('RAM recovery ECID mismatch or unsupported fuse-helper output')
+        disk.reopen = gone
+        with patch.object(disk, 'write', side_effect=OSError('pipe closed')):
+            with self.assertRaisesRegex(ValueError, 'ECID mismatch'):
+                self.write(disk)
+        disk.unlock()
+
+    def test_progress_reports_percent_rate_and_eta(self):
+        import io
+        from nvidia_flash_tools.writer import Progress
+        out, clock = io.StringIO(), [0.0]
+        progress = Progress('NVMe write', 100_000_000, out=out, every=5)
+        progress.clock = lambda: clock[0]
+        progress.start = progress.last = 0.0
+        clock[0] = 1; progress.update(10_000_000)        # throttled
+        clock[0] = 10; progress.update(50_000_000)
+        clock[0] = 20; progress.update(100_000_000, final=True)
+        lines = out.getvalue().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertIn(' 50.0%', lines[0]); self.assertIn('5.0 MB/s', lines[0]); self.assertIn('ETA 0:10', lines[0])
+        self.assertIn('100.0%', lines[1]); self.assertIn('ETA 0:00', lines[1])
+
     def test_chunk_retry_after_failed_transfer(self):
         disk = FileDisk(self.dest)
         real = disk.write

@@ -43,6 +43,9 @@ def fixture(workspace, fault=None):
     # unexecuted command (observed on a J4012 workspace).
     (bl/'flashcmd.txt').write_text('./tegraflash.py --cmd "secureflash;reboot"  --cfg secureflash.xml --chip 0x23 --instance 1-2  --bct_backup')
     (bl/'flash.xml').write_text(layout)
+    # Only the version-timestamp site generate_qspi pins; flash.sh itself is an edge.
+    from nvidia_flash_tools.orin_firmware import VER_TIMESTAMP_SITE
+    (workspace.tree/'flash.sh').write_text('#!/bin/bash\n' + VER_TIMESTAMP_SITE)
     if fault == 'ver':
         (bl/'qspi_bootblob_ver.txt').write_text('NV4\n# R39 , REVISION: 2.1\n')
     (bl/'bct.bin').write_bytes(b'file-only-BCT-no-device-metadata')
@@ -61,6 +64,10 @@ def fixture(workspace, fault=None):
             # Only the real file-only parser repair may cross this edge.
             assert Path(argv[0]) == bl/'tegraparser_v2', argv
             return subprocess.run(argv, **kwargs)
+        from nvidia_flash_tools.orin_firmware import VER_TIMESTAMP_PINNED
+        assert VER_TIMESTAMP_PINNED in (workspace.tree/'flash.sh').read_text(), 'flash.sh timestamp not pinned'
+        # flash.sh copies the -c partition XML to bootloader/flash.xml.
+        shutil.copyfile(Path(kwargs['cwd'])/argv[argv.index('-c')+1], bl/'flash.xml')
         previous = Path.cwd(); os.chdir(bl)
         try:
             def toolrun(cmd, *a, **k):
@@ -143,6 +150,66 @@ class SignedCfgTests(unittest.TestCase):
         with patch.object(w,'runner') as runner:
             with self.assertRaisesRegex(ValueError,'fresh'):v.generate_qspi()
             runner.assert_not_called()
+
+    def test_pinned_cfg_signed_and_flash_sh_restored(self):
+        w,v=self.generate(); original=(w.tree/'flash.sh').read_bytes()
+        calls=[]; edge=w.runner
+        def runner(argv, **kwargs):
+            calls.append(list(argv)); return edge(argv, **kwargs)
+        w.runner=runner
+        v.generate_qspi(); w.validate()
+        self.assertEqual(calls[0][calls[0].index('-c')+1],'bootloader/generic/cfg/admiral-flash_t234_qspi.xml')
+        self.assertEqual((w.tree/'flash.sh').read_bytes(),original)
+        signed=ElementTree.parse(w.tree/'bootloader/admiral-qspi-signed/flash.xml.tmp').findall('.//partition')
+        from nvidia_flash_tools.orin_firmware import partition_guids
+        self.assertEqual({p.get('name'):p.findtext('unique_guid').strip() for p in signed},
+                         partition_guids('orin',w.tree/'bootloader/generic/cfg/flash_t234_qspi.xml'))
+
+    def test_two_generations_sign_identical_plan(self):
+        plans,cfgs=[],[]; base=self.root
+        self.addCleanup(setattr,self,'root',base)
+        for run in range(2):
+            self.root=base/('generation%d'%run); self.root.mkdir()   # independent session workspace
+            w,v=self.generate(); v.generate_qspi()
+            plans.append(v.orin_plan)
+            cfgs.append((w.tree/'bootloader/generic/cfg/admiral-flash_t234_qspi.xml').read_bytes())
+        self.assertEqual(cfgs[0],cfgs[1])
+        self.assertEqual(plans[0],plans[1])
+
+    def test_signing_failure_restores_flash_sh(self):
+        w,v=self.generate(); original=(w.tree/'flash.sh').read_bytes(); edge=w.runner
+        def runner(argv, **kwargs):
+            if argv[0]=='./flash.sh':
+                assert b'date -R' not in (w.tree/'flash.sh').read_bytes()
+                return subprocess.CompletedProcess(argv,1,b'sign failed')
+            return edge(argv, **kwargs)
+        w.runner=runner
+        with self.assertRaises(subprocess.CalledProcessError): v.generate_qspi()
+        self.assertEqual((w.tree/'flash.sh').read_bytes(),original)
+
+    def test_actual_tegraparser_pins_partition_guids_not_disk_guid(self):
+        # Real pinned tegraparser_v2 (file-only) on the pinned XML, two seconds
+        # apart: every partition entry is identical; only the GPT header's disk
+        # GUID (srand(time()), no XML input) and its header CRC differ.
+        import time, uuid
+        from nvidia_flash_tools import orin_firmware
+        stock=vendor_path(orin_firmware.STOCK_XML)
+        if not (SOURCE/'tegraparser_v2').is_file() or not stock.is_file():
+            self.skipTest('set NVIDIA_VENDOR_ROOT to the extracted pinned BSP')
+        outputs=[]
+        for run in range(2):
+            d=self.root/('parser%d'%run); d.mkdir()
+            shutil.copyfile(SOURCE/'tegraparser_v2',d/'tegraparser_v2'); (d/'tegraparser_v2').chmod(0o700)
+            (d/'flash.xml.tmp').write_text(orin_firmware.pinned_xml(stock,'recomputer-j40'))
+            if run: time.sleep(1.1)
+            for argv in (['--pt','flash.xml.tmp'],['--generategpt','--pt','flash.xml.bin']):
+                subprocess.run([str(d/'tegraparser_v2')]+argv,cwd=d,check=True,capture_output=True)
+            outputs.append((d/'gpt_secondary_3_0.bin').read_bytes())
+        a,b=outputs; header=len(a)-512
+        self.assertEqual(a[:header],b[:header])                         # all partition entries
+        self.assertEqual(a[16:32],uuid.uuid5(orin_firmware.GUID_NAMESPACE,'recomputer-j40:BCT').bytes_le)
+        differ=[i-header for i in range(header,len(a)) if a[i]!=b[i]]
+        self.assertTrue(set(differ)<=set(range(16,20))|set(range(56,72)),differ)
 
     def test_generated_cfg_mutation_refused_by_workspace(self):
         w,v=self.generate(); v.generate_qspi()

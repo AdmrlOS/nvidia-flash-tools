@@ -334,6 +334,41 @@ class ExecutionTests(unittest.TestCase):
         with self.assertRaises(ValueError):n.write(4096,payload)
         with self.assertRaises(ValueError):n.read(0,4194816)
 
+    def test_remote_ecid_retries_only_failed_logins(self):
+        import subprocess
+        from nvidia_flash_tools import transport as t
+        ecid = '0x80012000000000000000000000001234'
+        good = ('BR_CID: 0x%025x' % (int(ecid, 16) & ((1 << 100) - 1))).encode()
+        drop = subprocess.CalledProcessError(255, ['ssh'])
+        sleeps = []
+        shell = Mock(side_effect=[drop, subprocess.TimeoutExpired(['ssh'], 10), good])
+        t.check_remote_ecid_retrying(Mock(shell=shell), ecid, sleep=sleeps.append)
+        self.assertEqual((shell.call_count, sleeps), (3, [2, 5]))
+        shell = Mock(return_value=b'BR_CID: 0x' + b'1' * 25)          # wrong board: no retry
+        with self.assertRaisesRegex(ValueError, 'mismatch'):
+            t.check_remote_ecid_retrying(Mock(shell=shell), ecid, sleep=sleeps.append)
+        self.assertEqual(shell.call_count, 1)
+        shell = Mock(side_effect=[drop, drop, drop])                   # board gone: fails
+        with self.assertRaises(subprocess.CalledProcessError):
+            t.check_remote_ecid_retrying(Mock(shell=shell), ecid, sleep=lambda _: None)
+        self.assertEqual(shell.call_count, 3)
+
+    def test_native_zero_and_board_hash_frames(self):
+        zero=hashlib.sha256(bytes(1024)).digest(); data=hashlib.sha256(b'x').digest()
+        p=Mock(); p.poll.return_value=None; p.stdin=io.BytesIO()
+        p.stdout=io.BytesIO(self.frame(zero)+self.frame(data)+self.frame(data))
+        n=NativeSession(p, {'capacity':4096}, lambda:None)
+        n.zero(1024,1024)
+        self.assertEqual(n.hash(0,512),data.hex())
+        frames=p.stdin.getvalue()
+        self.assertEqual(frames[:45],struct.pack('>cQI32s',b'Z',1024,1024,zero))   # no payload follows
+        self.assertEqual(frames[45:90],struct.pack('>cQI32s',b'H',0,512,bytes(32)))
+        self.assertEqual(len(frames),90)
+        with self.assertRaisesRegex(ValueError,'readback mismatch'):
+            n.zero(0,512)                     # board reports a hash that is not the zero range
+        with self.assertRaisesRegex(ValueError,'no payload'):
+            NativeSession(p,{'capacity':4096},lambda:None).request(b'Z',0,512,b'x'*512)
+
     def test_native_truncation_and_response_hash_fail_closed(self):
         for raw in [b'',self.frame(b'a'*512)[:-1],struct.pack('>I32s',512,bytes(32))+b'a'*512]:
             p=Mock();p.poll.return_value=None;p.stdin=io.BytesIO();p.stdout=io.BytesIO(raw)

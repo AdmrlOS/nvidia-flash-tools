@@ -59,7 +59,10 @@ static int transfer(int fd, uint64_t offset, size_t length, int writing) {
 }
 
 /* Framed session: 45 byte request = op,u64be offset,u32be length,sha256.
- * Response u32be length,sha256,data. One descriptor for the entire session.
+ * Ops: R read, W write (payload follows), Z write zeros (no payload; sha256
+ * of the zero range), H hash only. Response u32be length,sha256,data: R gets
+ * the data, W/Z/H get the 32-byte SHA256 of the range as read back from disk.
+ * One descriptor for the entire session.
  * EOF, invalid hash, stale identity, holders or mounts ends the session.
  */
 static int exact(int fd, void *buf, size_t n, int wr) {
@@ -158,9 +161,16 @@ static int session(int fd, const char *name, unsigned maj, unsigned min,
            RECOVERY_NAMESPACE_CHECK(name,maj,min,serial,model,expected_device))break;
         if(header[0]=='Q' && !length && !offset){result=0;break;}
         if(!length || length>4194304 || offset>capacity || length>capacity-offset ||
-           offset%512 || length%512 || (header[0]!='R' && header[0]!='W'))break;
-        if(header[0]=='W') {
-            if(exact(0,data,length,0))break;
+           offset%512 || length%512 ||
+           (header[0]!='R' && header[0]!='W' && header[0]!='H' && header[0]!='Z'))break;
+        if(header[0]=='W' || header[0]=='Z') {
+            if(header[0]=='W') {
+                if(exact(0,data,length,0))break;
+            } else {
+                /* Zero fill: no payload on the wire; the request still carries
+                 * the SHA256 of exactly `length` zero bytes. */
+                memset(data,0,length);
+            }
             SHA256(data,length,hash);
             if(memcmp(hash,header+13,32))break;
             size_t done=0;
@@ -183,9 +193,11 @@ static int session(int fd, const char *name, unsigned maj, unsigned min,
             done+=(size_t)k;
         }
         SHA256(data,length,hash);
+        /* R returns the data; W, Z and H return the SHA256 of what is now on
+         * disk (read back after the write), authenticated by its own hash. */
         uint32_t output=header[0]=='R'?length:32;
         for(int i=0;i<4;i++)reply[i]=(unsigned char)(output>>(24-8*i));
-        if(header[0]=='W'){memcpy(data,hash,32);SHA256(data,32,reply+4);}
+        if(header[0]!='R'){memcpy(data,hash,32);SHA256(data,32,reply+4);}
         else memcpy(reply+4,hash,32);
         if(exact(1,reply,36,1)||exact(1,data,output,1))break;
     }

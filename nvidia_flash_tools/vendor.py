@@ -4,6 +4,7 @@ Source contracts: flash.sh readfuses text, chkbdinfo -i/-k/-f/-r, and
 tegraflash_impl_t{234,264}.py writing '<fuse>: <lowercase hex>\n'.
 No hardware output fixture has been captured: fixtures are source-derived.
 """
+import copy
 import csv
 import hashlib
 import json
@@ -258,14 +259,15 @@ class Vendor:
             # NVIDIA-format EEPROM: its cvb result is recorded and table-checked.
             if (decode('-i', 'cvm.bin'), decode('-k', 'cvm.bin')) != (module, sku):
                 raise ValueError('module/SKU/carrier not allowlisted')
-            record = self.cvb_evidence(bl, eeproms)
+            prior = getattr(self, 'carrier_record', None)
+            record = copy.deepcopy(prior) if prior is not None else self.cvb_evidence(bl, eeproms)
             carrier_rule.check_evidence(record)
             identity.update({'module': module + '-' + sku, 'carrier': carrier_rule.CARRIER,
                              'carrier_rule': carrier_rule.RULE, 'carrier_evidence': record,
                              'fab': decode('-f', 'cvm.bin'), 'revision': decode('-r', 'cvm.bin'),
                              'cvm_sha256': sha256(bl / eeproms['cvm.bin']),
                              'cvb_sha256': record['cvb_sha256']})
-            if record['outcome'] == 'dump-failed':
+            if prior is None and record['outcome'] == 'dump-failed':
                 # MB2 refuses the J401 cvb read and tegraflash stops before its
                 # recovery reboot. Each tegraflash run deletes its private session
                 # state, so no later run can reset the applet: only a power cycle
@@ -280,6 +282,8 @@ class Vendor:
             # The board must be back in boot ROM recovery: the same board.
             if self.uid() != {k: identity[k] for k in ('br_cid', 'ecid')}:
                 raise ValueError('board changed during carrier EEPROM read')
+            if prior is None:
+                self.carrier_record = copy.deepcopy(record)
         else:
             actual = (decode('-i', 'cvm.bin'), decode('-k', 'cvm.bin'),
                       decode('-i', 'cvb.bin'), decode('-k', 'cvb.bin'))
@@ -319,7 +323,7 @@ class Vendor:
     def generate_qspi(self):
         if self.board != 'thor':
             from nvidia_flash_tools.orin_recovery import command
-            from nvidia_flash_tools.orin_firmware import plan
+            from nvidia_flash_tools.orin_firmware import plan, deterministic_signing, partition_guids, STOCK_XML
             signed = self.tree / 'bootloader/signed'
             snapshot = self.tree / 'bootloader/admiral-qspi-signed'
             if self.workspace is not None:
@@ -327,10 +331,12 @@ class Vendor:
             # A fresh sign must create this graph; never bless a cached cfg.
             if any(p.exists() or p.is_symlink() for p in (signed, snapshot)):
                 raise ValueError('Orin signing requires a fresh signed output directory')
-            self.run(['./flash.sh', '--no-flash', '--no-systemimg', '--sign', '--qspi-only',
-                      '-c', 'bootloader/generic/cfg/flash_t234_qspi.xml',
-                      '--usb-instance', self.port, self.alias, 'internal'],
-                     {'ADDITIONAL_DTB_OVERLAY': 'BootOrderNvme.dtbo'})
+            # Pinned partition GUIDs and version timestamp: the same release and
+            # board then sign a byte-identical QSPI image in every session.
+            with deterministic_signing(self) as cfg:
+                self.run(['./flash.sh', '--no-flash', '--no-systemimg', '--sign', '--qspi-only',
+                          '-c', cfg, '--usb-instance', self.port, self.alias, 'internal'],
+                         {'ADDITIONAL_DTB_OVERLAY': 'BootOrderNvme.dtbo'})
             # --no-flash --sign signs locally; flashcmd.txt then holds the
             # generated secureflash, which is never executed. Any other
             # operation means flash.sh did not run in generate-only mode.
@@ -348,12 +354,18 @@ class Vendor:
                 if not (signed/'flash.idx').exists():
                     self.run([self.tree/'bootloader/tegraparser_v2','--pt','flash.xml.bin',
                               '--generateflashindex','flash.idx'],cwd=signed)
+                from nvidia_flash_tools.orin_firmware import pin_disk_guid
+                from nvidia_flash_tools.orin_recovery import seal
+                pin_disk_guid(signed, self.board)
+                if self.workspace is not None:
+                    seal(self)
                 # T234 --rcm-boot always re-signs into signed/ (odmsign), so the
                 # approved SPI graph is kept in its own copy for plan and provision.
                 self.run(['/bin/cp', '-a', '--', 'signed', snapshot.name], cwd=signed.parent)
                 signed = self.qspi_signed = snapshot
-            self.orin_plan, _ = plan(signed/'flash.idx', signed/'flash.xml.tmp',
-                                    self.tree/'bootloader/generic/cfg/flash_t234_qspi.xml')
+            stock = self.tree / STOCK_XML
+            self.orin_plan, _ = plan(signed/'flash.idx', signed/'flash.xml.tmp', stock,
+                                     partition_guids(self.board, stock))
             return package_hashes(self.tree)
         env = {'ADDITIONAL_DTB_OVERLAY_OPT': 'BootOrderNvme.dtbo'}
         self.run(['./l4t_initrd_flash.sh', '--no-flash', '--qspi-only', '--usb-instance', self.port, self.alias, 'internal'], env)

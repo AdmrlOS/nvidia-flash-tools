@@ -3,18 +3,147 @@
 Matches l4t_flash_from_kernel.sh write_to_spi_partition, including 16KiB
 BR-BCT repetition. This is NOT Thor's 256KiB BCT transformation.
 """
+import contextlib
 import csv
 import hashlib
 from pathlib import Path
 import re
 import shlex
+import uuid
 from nvidia_flash_tools.vendor import qspi_package
 
 CAPACITY = 64 * 1024 * 1024
 EXECUTOR_TIMEOUT = 3600
+CHUNK = 4 * 1024 * 1024
+# One board-side pass reads and hashes all 16 chunks (mtd_debug + sha256sum).
+HASH_TIMEOUT = 600
+
+STOCK_XML = 'bootloader/generic/cfg/flash_t234_qspi.xml'
+PINNED_XML = 'bootloader/generic/cfg/admiral-flash_t234_qspi.xml'
+# Deterministic QSPI generation for one release + board.
+# tegraparser_v2 draws every GPT partition unique GUID from srand(time()) unless
+# the partition XML carries <unique_guid>; each partition gets
+# uuid5(GUID_NAMESPACE, '<board>:<partition name>'). The namespace is a fixed
+# constant private to this installer, so the values cannot equal NVIDIA's or
+# any NVMe partition GUID.
+GUID_NAMESPACE = uuid.UUID('6cc68acf-9941-4188-b54d-f0b2db39db6d')
+# flash.sh writes $(date -R) into qspi_bootblob_ver.txt (A_VER/B_VER). Pin it to
+# the R39.2.1 build date from its nv_tegra_release (GCID 46758480, Fri Aug 7
+# 05:42:45 UTC 2026); both lines are replaced so the host time zone cannot
+# change the derived %Y%m%d%H%M%S value either.
+VER_TIMESTAMP_SITE = ('\tVER_TIMESTAMP="$(date -R)"\n'
+                      '\tTIMESTAMP=$(date -d "$VER_TIMESTAMP" +%Y%m%d%H%M%S)\n')
+VER_TIMESTAMP_PINNED = ('\tVER_TIMESTAMP="Fri, 07 Aug 2026 05:42:45 +0000"\n'
+                        '\tTIMESTAMP=20260807054245\n')
 
 
-def plan(index, xml, stock):
+# tegraparser_v2 seeds the GPT *disk* GUID from srand(time(NULL)) with no XML
+# or command-line override, so it is pinned after signing in the two flashed
+# secondary GPT copies (header CRC and their flash.idx sha1 rewritten to match).
+GPT_FILES = ('gpt_secondary_3_0.bin', 'gpt_backup_secondary_3_0.bin')
+GPT_FILE_SIZE = 16384 + 512   # 128 entries x 128 bytes, then the 92-byte header
+
+
+def disk_guid(board):
+    return uuid.uuid5(GUID_NAMESPACE, board + ':disk')
+
+
+def pin_disk_guid(signed, board):
+    """Set the pinned disk GUID in the signed secondary GPTs; keep flash.idx exact."""
+    import struct
+    import zlib
+    guid = disk_guid(board).bytes_le
+    index = Path(signed) / 'flash.idx'
+    lines = index.read_text().splitlines(keepends=True)
+    for name in GPT_FILES:
+        path = Path(signed) / name
+        listed = [line for line in lines if [f.strip() for f in line.split(',')][4:5] == [name]]
+        if not listed and not (path.exists() or path.is_symlink()):
+            continue            # not part of this signed graph; nothing flashed to pin
+        if path.is_symlink() or not path.is_file():
+            raise ValueError('signed Orin secondary GPT missing: ' + name)
+        data = bytearray(path.read_bytes())
+        h = GPT_FILE_SIZE - 512
+        if len(data) != GPT_FILE_SIZE or data[h:h + 8] != b'EFI PART' or struct.unpack_from('<I', data, h + 12)[0] != 92:
+            raise ValueError('unknown signed Orin secondary GPT layout: ' + name)
+        def crc(buffer):
+            header = bytearray(buffer[h:h + 92]); header[16:20] = bytes(4)
+            return zlib.crc32(header) & 0xFFFFFFFF
+        if crc(data) != struct.unpack_from('<I', data, h + 16)[0]:
+            raise ValueError('signed Orin secondary GPT header CRC invalid: ' + name)
+        old = hashlib.sha1(data).hexdigest()
+        data[h + 56:h + 72] = guid
+        struct.pack_into('<I', data, h + 16, crc(data))
+        new = hashlib.sha1(data).hexdigest()
+        rows = [i for i, line in enumerate(lines)
+                if [f.strip() for f in line.split(',')][4:5] == [name] and line.rstrip().endswith(', ' + old)]
+        if len(rows) != 1:
+            raise ValueError('signed Orin flash.idx row not uniquely found for ' + name)
+        line = lines[rows[0]]; body = line.rstrip('\r\n')
+        lines[rows[0]] = body[:-len(old)] + new + line[len(body):]
+        path.write_bytes(data)
+    index.write_text(''.join(lines))
+
+
+def partition_guids(board, stock):
+    """Deterministic <unique_guid> for every stock partition of this board."""
+    return {name: str(uuid.uuid5(GUID_NAMESPACE, board + ':' + name)) for name in qspi_package(stock)}
+
+
+def pinned_xml(stock, board):
+    """Stock QSPI XML text with exactly one <unique_guid> added per partition.
+
+    Text insertion keeps every stock byte; the result is re-parsed and must
+    differ from stock only by those elements.
+    """
+    import xml.etree.ElementTree as ET
+    text = Path(stock).read_text()
+    guids = partition_guids(board, stock)
+    if 'unique_guid' in text:
+        raise ValueError('stock Orin SPI XML already carries unique GUIDs')
+    pattern = re.compile(r'<partition\s+name="([A-Za-z0-9_-]+)"[^>]*(?<!/)>')
+    if len(pattern.findall(text)) != len(guids):
+        raise ValueError('stock Orin SPI XML partition tags not uniquely located')
+    result = pattern.sub(lambda m: m[0] + '\n            <unique_guid> ' + guids[m[1]] + ' </unique_guid>', text)
+    # qspi_package (via partition_guids) already refused entities/DTDs here.
+    root = ET.fromstring(result)
+    for node in root.findall('.//partition'):
+        values = [(g.text or '').strip() for g in node.findall('unique_guid')]
+        if values != [guids[node.get('name')]]:
+            raise ValueError('pinned Orin SPI XML unique GUID placement failed')
+    return result
+
+
+def _seal(vendor):
+    if vendor.workspace is not None:
+        from nvidia_flash_tools.orin_recovery import seal
+        seal(vendor)
+
+
+@contextlib.contextmanager
+def deterministic_signing(vendor):
+    """Write the pinned XML and pin flash.sh's version timestamp while signing.
+
+    Yields the XML path for flash.sh -c. flash.sh is restored (and the tree
+    re-sealed) even if signing fails.
+    """
+    flash = vendor.tree / 'flash.sh'
+    original = flash.read_text()
+    if original.count(VER_TIMESTAMP_SITE) != 1:
+        raise ValueError('pinned flash.sh version timestamp site changed')
+    target = vendor.tree / PINNED_XML
+    if target.is_symlink():
+        raise ValueError('pinned Orin SPI XML path is a symlink')
+    target.write_text(pinned_xml(vendor.tree / STOCK_XML, vendor.board))
+    flash.write_text(original.replace(VER_TIMESTAMP_SITE, VER_TIMESTAMP_PINNED))
+    _seal(vendor)
+    try:
+        yield PINNED_XML
+    finally:
+        flash.write_text(original); _seal(vendor)
+
+
+def plan(index, xml, stock, guids=None):
     names = qspi_package(xml, index)
     allowed = qspi_package(stock)
     # qspi_package rejects entities/DTDs and bounds these authenticated XMLs.
@@ -30,6 +159,10 @@ def plan(index, xml, stock):
             value=(base.findtext(tag) or '').strip()
             if actual != value:
                 raise ValueError('Orin stock partition geometry changed')
+        # The only permitted addition to stock: the pinned per-partition GUID.
+        unique = [(g.text or '').strip() for g in node.findall('unique_guid')]
+        if base.findall('unique_guid') or unique != ([] if guids is None else [guids.get(name)]):
+            raise ValueError('Orin SPI partition unique GUID differs from the pinned value')
     if len(names) != len(set(names)) or set(names) != set(allowed):
         raise ValueError('Orin SPI layout must preserve exact stock partition names')
     root = Path(index).parent
@@ -99,12 +232,55 @@ def vendor_functions(source):
     return '\n'.join(selected)
 
 
+def board_hashes(transport, directory):
+    """SHA-256 of every 4 MiB /dev/mtd0 chunk, computed on the board.
+
+    One fixed remote script: each chunk is read with mtd_debug into the
+    validated private scratch directory and hashed there, so only ~16 short
+    lines cross the link instead of 64 MiB.
+    """
+    chunk = directory + '/chunk.bin'
+    offsets = list(range(0, CAPACITY, CHUNK))
+    script = ('set -eu\nc=' + shlex.quote(chunk) + '\n'
+              'for o in ' + ' '.join(map(str, offsets)) + '; do\n'
+              '  /usr/sbin/mtd_debug read /dev/mtd0 "$o" ' + str(CHUNK) + ' "$c" >/dev/null\n'
+              '  printf "%s " "$o"\n'
+              '  /usr/bin/sha256sum "$c"\n'
+              'done\n'
+              '/bin/rm -f "$c"\n')
+    output = transport.shell('/bin/bash', '-c', script, timeout=HASH_TIMEOUT).decode()
+    hashes = []
+    for offset, line in zip(offsets, output.splitlines()):
+        match = re.fullmatch(r'([0-9]+) ([0-9a-f]{64})  ' + re.escape(chunk), line)
+        if not match or int(match[1]) != offset:
+            raise ValueError('unexpected board-side Orin SPI hash output')
+        hashes.append((offset, match[2]))
+    if len(hashes) != len(offsets) or len(output.splitlines()) != len(offsets):
+        raise ValueError('incomplete board-side Orin SPI hash output')
+    return hashes
+
+
+def mismatched(hashes, expected):
+    """Offsets of chunks whose board hash differs from the approved bytes."""
+    return [offset for offset, digest in hashes
+            if digest != hashlib.sha256(expected[offset:offset + CHUNK]).hexdigest()]
+
+
+def hash_pass(transport, directory, expected, label):
+    import time
+    started = time.monotonic()
+    print('QSPI: hashing all 64 MiB on the board (' + label + ')...', flush=True)
+    result = mismatched(board_hashes(transport, directory), expected)
+    print('QSPI: board-side hash pass done in %d:%02d' % divmod(int(time.monotonic() - started), 60), flush=True)
+    return result
+
+
 def provision(vendor, transport):
     index = vendor.qspi_signed / 'flash.idx'
     xml = vendor.qspi_signed / 'flash.xml.tmp'
-    stock = vendor.tree / 'bootloader/generic/cfg/flash_t234_qspi.xml'
-    contract, expected = plan(index, xml, stock)
-    if contract != vendor.orin_plan:
+    stock = vendor.tree / STOCK_XML
+    contract, expected = plan(index, xml, stock, partition_guids(vendor.board, stock))
+    if contract != vendor.orin_plan or hashlib.sha256(expected).hexdigest() != contract['sha256']:
         raise ValueError('Orin approved generated SPI bytes changed')
     transport.bind()
     from nvidia_flash_tools.transport import check_remote_ecid
@@ -120,7 +296,14 @@ def provision(vendor, transport):
     if not re.fullmatch(r'/tmp/admiral-spi-[A-Za-z0-9]{8}', directory):
         raise ValueError('invalid SPI scratch directory')
     local = vendor.workspace.root / 'orin-spi-executor.sh'
+    result = {'size':CAPACITY,'sha256':contract['sha256'],'generated_partitions':contract['payloads'],
+              'verification':'board-sha256-4MiB-chunks'}
     try:
+        # Every chunk already equal to the approved bytes: the whole 64 MiB is
+        # identical, so erase + write would only rewrite the same bytes.
+        if not hash_pass(transport, directory, expected, 'before erase'):
+            print('QSPI: already identical to the approved image; erase and write skipped', flush=True)
+            return dict(result, write='skipped-identical')
         for payload in contract['payloads']:
             target = directory + '/' + payload['filename']
             transport.push(index.parent / payload['filename'], target)
@@ -144,19 +327,17 @@ def provision(vendor, transport):
         transport.bind(); check_remote_ecid(transport, vendor.approved_identity['ecid'])
         # Whole-device NOR erase + write takes minutes (NVIDIA's own secureflash
         # wrote this J4012's QSPI in ~15 min); the 120 s command default killed it.
+        import time
+        started = time.monotonic()
+        print('QSPI: erasing and writing 64 MiB on the board (no progress output from the NVIDIA writer)...', flush=True)
         transport.shell('/bin/bash', directory + '/executor.sh', timeout=EXECUTOR_TIMEOUT)
-        digester = hashlib.sha256()
-        for offset in range(0, CAPACITY, 4 * 1024 * 1024):
-            count = min(4 * 1024 * 1024, CAPACITY-offset)
-            target = directory + '/readback.bin'
-            transport.shell('/usr/sbin/mtd_debug', 'read', '/dev/mtd0', str(offset), str(count), target)
-            data = transport.shell('/bin/cat', target)
-            if data != expected[offset:offset+count]:
-                raise ValueError('full-controller Orin SPI readback mismatch at ' + str(offset))
-            digester.update(data)
-        if digester.hexdigest() != contract['sha256']:
-            raise ValueError('Orin SPI readback hash mismatch')
-        return {'size':CAPACITY,'sha256':digester.hexdigest(),'generated_partitions':contract['payloads']}
+        print('QSPI: written in %d:%02d' % divmod(int(time.monotonic() - started), 60), flush=True)
+        # All 16 chunk hashes equal => the device equals expected, whose sha256
+        # is the approved contract hash checked above.
+        bad = hash_pass(transport, directory, expected, 'verify')
+        if bad:
+            raise ValueError('full-controller Orin SPI readback mismatch at offset ' + str(bad[0]))
+        return dict(result, write='written')
     finally:
         local.unlink(missing_ok=True)
         transport.shell('/bin/rm','-rf',directory)

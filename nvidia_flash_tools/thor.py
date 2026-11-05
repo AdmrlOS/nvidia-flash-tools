@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Guided Jetson installer. Not tested on physical devices."""
+"""Guided Jetson installer."""
 import argparse
 import json
 import os
@@ -61,7 +61,7 @@ def recovery_port(sysfs=Path('/sys/bus/usb/devices')):
 def approval(stage, contract, pin):
     print(json.dumps({'stage': stage, 'exact_approval': contract, 'audit_sha256': pin}, indent=2))
     phrase = 'ERASE NVME' if stage == 'erase-nvme' else 'ERASE FIRMWARE AND NVME EXPERIMENTAL'
-    print('Not tested on physical devices. Power loss may require stock NVIDIA recovery. Firmware stage authorizes board firmware replacement and the subsequent separately confirmed complete NVMe erase.')
+    print('Power loss may require stock NVIDIA recovery. Firmware stage authorizes board firmware replacement and the subsequent separately confirmed complete NVMe erase.')
     print('WARNING: this stage irreversibly replaces ' + ('the displayed NVMe disk.' if stage == 'erase-nvme' else 'board firmware.'))
     # Preserve the backend exact digest contract without asking users to retype
     # hashes. Never reuse consent for another stage/identity/generated package.
@@ -97,10 +97,10 @@ def main(argv=None):
     parser.add_argument('--board', choices=('thor','orin','orin-nx','recomputer-j40'), default='thor')
     args = parser.parse_args(argv)
     board = args.board
-    print(board.upper() + ': Not tested on physical devices. Test-key images; exact reference kit only.')
+    print(board.upper() + ': test-key images; exact reference kit only.')
     consent = False
     if args.action == 'install':
-        print('Risk: failure to boot, power-loss recovery, irreversible firmware replacement AND complete NVMe data loss. Back up everything. No production readiness claimed.')
+        print('Risk: failure to boot, power-loss recovery, irreversible firmware replacement AND complete NVMe data loss. Back up everything.')
         consent = input('Type I ACCEPT THE RISKS to continue: ').strip() == 'I ACCEPT THE RISKS'
         if not consent:
             raise ValueError('risk consent declined; no downloads/device writes')
@@ -111,7 +111,7 @@ def main(argv=None):
     print('\n'.join(issues) if issues else 'Ubuntu 22.04/24.04/26.04 physical x86_64 host prerequisites present.')
     if args.action == 'check':
         verify_image(Path(input('Admiral image file: ').strip()).expanduser(), release, board)
-        print('Offline check complete; hardware remains unverified.')
+        print('Offline check complete.')
         return 0
     if issues:
         raise ValueError('resolve the reported host prerequisites; review/approve and run the printed apt command yourself, then retry')

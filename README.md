@@ -5,9 +5,7 @@ Orin NX reference kit or **Seeed reComputer J4012** using the pinned NVIDIA
 Jetson Linux 39.2.1 recovery tools.
 
 **Back up first: installation replaces QSPI boot firmware and erases the entire
-selected NVMe. Not tested on physical devices:** USB recovery, firmware acceptance,
-first boot, CUDA and interrupted-flash recovery need a hardware test. Keep stable
-power and disable host sleep. Secure Boot must already be disabled; the installer
+selected NVMe.** Keep stable power and disable host sleep. Secure Boot must already be disabled; the installer
 checks fuses and does not burn fuses, enroll keys or change security settings.
 
 ## 1. Set up the Ubuntu host
@@ -161,9 +159,10 @@ confirmation that you observed the Seeed unit ([rule](docs/reference.md#recomput
    module-identity check, not by this product ID). Leave the jumper fitted until
    the installer completes. Whenever it asks you to re-enter Force Recovery,
    power-cycle the unit (jumper still fitted) and press Enter; the installer
-   then waits for the board to enumerate again on the same USB port. Expect
-   this after every carrier check: the J401 has no NVIDIA carrier
-   EEPROM, and NVIDIA's tool leaves its flashing applet running after that read.
+   then waits for the board to enumerate again on the same USB port. Expect two
+   power cycles: one after the carrier check (the J401 has no NVIDIA carrier
+   EEPROM, and NVIDIA's tool leaves its flashing applet running after that
+   read) and one after the firmware stage.
 5. Start installation with the explicit selector:
 
    ```sh

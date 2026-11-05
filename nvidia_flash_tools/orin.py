@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Guided Orin reference-kit installer. Not tested on physical devices."""
+"""Guided Orin reference-kit installer."""
 import argparse
 from pathlib import Path
 from nvidia_flash_tools import thor

@@ -34,5 +34,25 @@ class NamespaceTests(unittest.TestCase):
             self.assertEqual(run('session',struct.pack('>cQI32s',b'Q',0,0,bytes(32))).returncode,0)
             self.assertEqual(run('session',b'W').returncode,1)
             self.assertEqual((root/'dev/nvme0n1').read_bytes(),bytes(4096))
+            # Z fills zeros on the board (no payload), H returns only a hash.
+            disk=root/'dev/nvme0n1';disk.write_bytes(b'\xaa'*4096)
+            import hashlib
+            zero=hashlib.sha256(bytes(1024)).digest()
+            frames=(struct.pack('>cQI32s',b'Z',1024,1024,zero)+struct.pack('>cQI32s',b'H',0,4096,bytes(32))+
+                    struct.pack('>cQI32s',b'Q',0,0,bytes(32)))
+            result=run('session',frames)
+            self.assertEqual(result.returncode,0)
+            expected=b'\xaa'*1024+bytes(1024)+b'\xaa'*2048
+            self.assertEqual(disk.read_bytes(),expected)
+            out=result.stdout
+            def reply(raw):
+                count,auth=struct.unpack('>I32s',raw[:36]);body=raw[36:36+count]
+                self.assertEqual(hashlib.sha256(body).digest(),auth);return body,raw[36+count:]
+            first,rest=reply(out);second,rest=reply(rest)
+            self.assertEqual((first,second,rest),(zero,hashlib.sha256(expected).digest(),b''))
+            # a Z whose stated hash is not the zero range is refused before any write
+            disk.write_bytes(b'\xaa'*4096)
+            self.assertEqual(run('session',struct.pack('>cQI32s',b'Z',0,1024,bytes(32))).returncode,1)
+            self.assertEqual(disk.read_bytes(),b'\xaa'*4096)
 
 if __name__=='__main__':unittest.main()

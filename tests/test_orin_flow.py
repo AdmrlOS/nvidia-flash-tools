@@ -76,6 +76,11 @@ class OrinFlowTests(unittest.TestCase):
                     return {'size':b'67108864','erasesize':b'65536','type':b'nor'}[Path(args[1]).name]
                 if args[0]=='/bin/mktemp':return b'/tmp/admiral-spi-abcdefgh\n'
                 if args[0]=='/usr/bin/sha256sum':return (hashlib.sha256(files[args[1]]).hexdigest()+'  '+args[1]+'\n').encode()
+                if args[:2]==('/bin/bash','-c'):
+                    # Production board-side hash script; only mtd_debug is a file edge.
+                    from tests.test_orin import board_hash
+                    local=self_outer.root/'ram-hash';local.mkdir(exist_ok=True)
+                    return board_hash(args[2],controller,local)
                 if args[0]=='/bin/bash':
                     events.append('erase')
                     # Run the actual production-generated vendor executor with
@@ -89,11 +94,9 @@ class OrinFlowTests(unittest.TestCase):
                     script=script.replace('COMMON_IMAGES_DIR=',edges+'COMMON_IMAGES_DIR=')
                     path=local/'run.sh';path.write_text(script)
                     subprocess.run(['/bin/bash',path],check=True,capture_output=True)
+                    if fault=='raw-corrupt':
+                        data=bytearray(controller.read_bytes());data[0]^=1;controller.write_bytes(bytes(data))
                     return b''
-                if args[0]=='/usr/sbin/mtd_debug':offset[0]=int(args[3]);return b''
-                if args[0]=='/bin/cat':
-                    with controller.open('rb') as f:f.seek(offset[0]);data=f.read(4194304)
-                    return bytes([data[0]^1])+data[1:] if fault=='raw-corrupt' else data
                 if args[0]=='/bin/rm':return b''
                 raise AssertionError(args)
         self_outer=self;ram=RAM();v=Vendor(w.tree,board,'1-2',workspace=w)
@@ -108,6 +111,8 @@ class OrinFlowTests(unittest.TestCase):
             if board=='recomputer-j40':
                 self.assertEqual(contract['physical_board']['carrier_confirmation'],'OBSERVED SEEED RECOMPUTER J401 CARRIER')
                 self.assertEqual(contract['physical_board']['carrier_evidence']['outcome'],'dump-failed')
+            if stage=='erase-nvme':   # the NVMe approval records how QSPI was provisioned
+                self.assertEqual(contract['firmware_package']['firmware_readback']['write'],'written')
             if fault=='package-mutation' and stage=='firmware':
                 (signed/'bct.bin').write_bytes(b'changed-after-approval')
             return '' if fault=='abort-'+stage else pin

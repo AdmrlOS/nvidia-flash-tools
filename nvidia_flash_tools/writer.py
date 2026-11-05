@@ -14,13 +14,47 @@ def hash_bytes(data):
     return hashlib.sha256(data).hexdigest()
 
 
+class Progress:
+    """One line per few seconds: stage, percent, MB/s and ETA."""
+    def __init__(self, stage, total, out=None, every=5.0):
+        import sys, time
+        self.stage, self.total, self.every = stage, max(total, 1), every
+        self.out, self.clock = out or sys.stdout, time.monotonic
+        self.start = self.last = self.clock()
+
+    def update(self, done, final=False):
+        now = self.clock()
+        if not final and now - self.last < self.every:
+            return
+        self.last = now
+        elapsed = max(now - self.start, 1e-6)
+        rate = done / elapsed
+        eta = (self.total - done) / rate if rate and done < self.total else 0
+        print('%s: %5.1f%%  %7.1f / %.1f MB  %6.1f MB/s  ETA %d:%02d' % (
+            self.stage, 100.0 * done / self.total, done / 1e6, self.total / 1e6,
+            rate / 1e6, eta // 60, eta % 60), file=self.out, flush=True)
+
+
 class RecoveryDisk:
-    """Delegates to a single authenticated native session; never reopens disk."""
+    """Delegates to one authenticated native session at a time.
+
+    reopen() replaces a failed session through the same authenticated open
+    (board ID, helper hash, exclusive namespace checks). It never steals a lock:
+    if the old helper still holds the namespace, the open fails closed.
+    """
     def __init__(self, transport, disk, ecid, helper, helper_sha256):
-        from nvidia_flash_tools.transport import check_remote_ecid
-        check_remote_ecid(transport, ecid)
         if disk['path'].startswith('/dev/nvme') is not True:
             raise ValueError('NVMe namespace required')
+        self._open = (transport, disk, ecid, helper, helper_sha256)
+        self.session = None
+        self.reopen()
+
+    def reopen(self):
+        from nvidia_flash_tools.transport import check_remote_ecid_retrying
+        transport, disk, ecid, helper, helper_sha256 = self._open
+        if self.session is not None and not self.session.closed:
+            self.session.abort()
+        check_remote_ecid_retrying(transport, ecid)
         self.session = transport.open_helper(helper, helper_sha256, disk)
 
     def identity(self):
@@ -31,6 +65,9 @@ class RecoveryDisk:
 
     def write(self, offset, data):
         return self.session.write(offset, data)
+
+    def zero(self, offset, length):
+        return self.session.zero(offset, length)
 
     def read(self, offset, length):
         return self.session.read(offset, length)
@@ -73,6 +110,9 @@ class FileDisk:
         if self.stream.write(data) != len(data):
             raise OSError('short write')
         os.fsync(self.stream.fileno())
+
+    def zero(self, offset, length):
+        self.write(offset, bytes(length))
 
     def read(self, offset, length):
         self.stream.seek(offset)
@@ -145,6 +185,8 @@ def write_image(source, disk, expected_hash, expected_identity, board_identity, 
         # Keep failed sessions locked until RAM recovery restart; never steal a lock.
         save('writing', 0)
         written_hash = hashlib.sha256()
+        zero_chunks = data_bytes = 0
+        progress = Progress('NVMe write', layout['size'])
         with open(source, 'rb') as inp:
             offset = 0
             while offset < layout['size']:
@@ -153,30 +195,51 @@ def write_image(source, disk, expected_hash, expected_identity, board_identity, 
                     raise ValueError('source truncated')
                 written_hash.update(block)
                 expected = hash_bytes(block)
+                # All-zero chunks (most of a sparse image) are filled by the
+                # board itself; the board's readback hash still proves them.
+                zero = not any(block) and hasattr(disk, 'zero')
                 for attempt in range(retries):
                     check_identity()
                     try:
                         # Rehash every previous chunk, including resumed chunks. No skip
                         # based on journal offsets; interrupted GPT updates also recover.
                         if disk.hash(offset, len(block)) != expected:
-                            disk.write(offset, block)
+                            if zero:
+                                disk.zero(offset, len(block))
+                            else:
+                                disk.write(offset, block)
                         if disk.hash(offset, len(block)) != expected:
                             raise ValueError('chunk readback hash mismatch')
                         break
                     except (OSError, ValueError, __import__('subprocess').SubprocessError):
                         if attempt + 1 == retries:
                             raise
+                        # A failed native request aborts its session; continue on a
+                        # freshly authenticated one bound to the same disk.
+                        if hasattr(disk, 'reopen'):
+                            disk.reopen()
+                            check_identity()
+                            disk.lock(expected_identity)
+                zero_chunks += zero
+                data_bytes += 0 if zero else len(block)
                 offset += len(block)
                 save('writing', offset)
+                progress.update(offset)
+        progress.update(offset, final=True)
+        print('NVMe write: %d MB sent as data, %d zero chunks filled on the board'
+              % (data_bytes // 1000000, zero_chunks), flush=True)
         if written_hash.hexdigest() != expected_hash:
             raise ValueError('source changed during chunk write')
         # A second pass proves the original image range before changing any GPT byte.
+        progress = Progress('NVMe verify', layout['size'])
         with open(source, 'rb') as inp:
             for offset in range(0, layout['size'], CHUNK):
                 check_identity()
                 block = inp.read(min(CHUNK, layout['size'] - offset))
                 if disk.hash(offset, len(block)) != hash_bytes(block):
                     raise ValueError('full image bounded readback mismatch')
+                progress.update(offset + len(block))
+        progress.update(layout['size'], final=True)
         save('relocating-gpt', layout['size'])
         if capacity != layout['size']:
             check_identity()

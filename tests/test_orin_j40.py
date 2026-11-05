@@ -370,7 +370,7 @@ class J40ProbeTests(ProbeBase):
         for mode, outcome in (('dump-failed', 'dump-failed'), ('blank-zero', 'blank-zero'), ('blank-ff', 'blank-ff'),
                               ('garbage', 'undecodable'), ('text-garbage', 'undecodable')):
             with self.subTest(mode):
-                self.cvb = mode
+                self.cvb, self.vendor.carrier_record = mode, None   # a fresh session per outcome
                 identity = self.probe()
                 self.assertEqual(identity['carrier_evidence']['outcome'], outcome)
                 self.assertEqual((identity['module'], identity['carrier'], identity['carrier_rule']),
@@ -388,7 +388,7 @@ class J40ProbeTests(ProbeBase):
         self.assertEqual(identity['cvb_sha256'], record['cvb_sha256'])
         self.assertEqual(record['decoders'], {'-i': {'returncode': 1, 'output': 'chkbdinfo: invalid EEPROM data'},
                                               '-k': {'returncode': 1, 'output': 'chkbdinfo: invalid EEPROM data'}})
-        self.cvb = 'text-garbage'
+        self.cvb, self.vendor.carrier_record = 'text-garbage', None   # a fresh session
         record = self.probe()['carrier_evidence']
         self.assertEqual(record['decoded'], {'id': 'SEEED', 'sku': 'J401'})
 
@@ -417,6 +417,22 @@ class J40ProbeTests(ProbeBase):
         self.assertRegex(second, r'^dump eeprom cvb admiral-[0-9a-f]{32}-cvb\.bin; reboot recovery$')
         self.assertEqual(self.power_cycles, 1)
         self.assertFalse(self.applet)
+
+    def test_later_probe_reuses_carrier_record_without_a_power_cycle(self):
+        self.cvb = 'dump-failed'
+        first = self.probe()
+        self.assertEqual((self.power_cycles, len(self.tegraflash())), (1, 2))
+        again = self.probe()                       # post-firmware re-probe, same session
+        self.assertEqual(self.power_cycles, 1)     # no second carrier power cycle
+        latest = self.tegraflash()[-1]
+        self.assertEqual(len(self.tegraflash()), 3)
+        cmd = latest[latest.index('--cmd')+1]
+        self.assertTrue(cmd.startswith('readfuses') and 'dump eeprom cvm' in cmd and 'cvb' not in cmd)
+        self.assertFalse(self.applet)
+        self.assertEqual(carrier.stable(again), carrier.stable(first))
+        self.cvm = ('3767', '0001')                # module EEPROM is still read fresh
+        with self.assertRaisesRegex(ValueError, 'not allowlisted'):
+            self.probe()
 
     def test_failed_carrier_read_without_power_cycle_stops(self):
         self.cvb = 'dump-failed'
@@ -484,11 +500,13 @@ class J40ProbeTests(ProbeBase):
             self.probe()
 
     def test_reprobe_compares_stable_fields_only(self):
+        # Two fresh carrier dumps (separate sessions): volatile output differs,
+        # stable identity does not.
         self.cvb = 'dump-failed'
-        a, b = self.probe(), self.probe()
+        a = self.probe(); self.vendor.carrier_record = None; b = self.probe()
         self.assertNotEqual(a['carrier_evidence']['volatile'], b['carrier_evidence']['volatile'])
         self.assertEqual(carrier.stable(a), carrier.stable(b))
-        self.cvb = 'blank-zero'
+        self.cvb, self.vendor.carrier_record = 'blank-zero', None
         self.assertNotEqual(carrier.stable(a), carrier.stable(self.probe()))
 
     def test_fresh_outputs_each_probe_and_no_cached_cvb(self):
@@ -981,7 +999,7 @@ class DocsTests(unittest.TestCase):
     def test_readme_section_and_notice(self):
         readme = (ROOT/'README.md').read_text()
         self.assertIn('## 2C. Install on reComputer J40/J4012', readme)
-        self.assertIn('Not tested on physical devices', readme)
+        self.assertNotIn('tested on physical', readme)
         section = readme[readme.index('## 2C.'):readme.index('## 3.')]
         for text in ('FC REC', '0955:7323', 'recomputer-j40', carrier.CONFIRMATION, 'wiki.seeedstudio.com/reComputer_J4012_Flash_Jetpack'):
             self.assertIn(text, section)
