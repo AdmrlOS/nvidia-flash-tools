@@ -10,6 +10,7 @@
 | Unsupported module/carrier/fuses or unknown Secure Boot | Stop and confirm labels/security with the operator. Do not invent metadata or enroll keys. |
 | USB/SSH/ADB timeout or interrupted write | Preserve the session and STOP message, restore stable power, reenter recovery and review the failure before retrying. Do not reuse a mutated prepared tree. |
 | reComputer J40/J4012: `recomputer-j40 carrier refused` or `board changed during carrier EEPROM read` | The carrier EEPROM decoded as an NVIDIA carrier, had an unexpected size, or the board left recovery after the dump. Stop; keep the printed evidence (sha256, decoder output, return code) and see the [carrier rule](reference.md#recomputer-j40). Do not substitute another board selector. |
+| Advantech MIC-733-AO: `mic-733-ao carrier refused`, `carrier EEPROM dump did not return`, or `unexpected Orin SPI geometry` | The carrier EEPROM read gave an outcome other than the captured `dump-failed`, hung, or the module QSPI is not the expected 64 MiB NOR. Nothing was written. Keep the printed evidence and see the [MIC-733-AO rule](reference.md#mic-733-ao); re-enter Force Recovery with SW_REC1 + SW_RST1 before any retry. `lsusb` shows `0955:7020`: the stock OS booted, not recovery. |
 | Verified write but no boot | Capture serial/UEFI output, confirm image/board and use stock recovery if necessary. |
 
 Logs can contain ECIDs, disk serials and local paths. Share only reviewed/redacted

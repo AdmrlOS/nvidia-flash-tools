@@ -46,8 +46,8 @@ def approval_contract(workspace, release, installer, helper, recovery, package, 
     from nvidia_flash_tools.security import regular_graph
     workspace.validate()
     from nvidia_flash_tools import carrier
-    # A J401 identity must carry accepted cvb evidence AND the typed confirmation
-    # before any digest exists; both are then bound through physical_board.
+    # A J401/MIC-733 identity must carry accepted cvb evidence AND the typed
+    # confirmation before any digest exists; both are bound through physical_board.
     carrier.validate_bound(board)
     contract = {'schema': 2, 'release': release,
                 'installer': installer_hashes(installer),
@@ -177,7 +177,7 @@ def sample_rootfs_members(release, board):
 
 
 def install_vendor_inputs(workspace, release, board):
-    """Board-specific pinned inputs (recomputer-j40) from the authenticated bundle."""
+    """Board-specific pinned inputs (recomputer-j40, mic-733-ao) from the authenticated bundle."""
     from nvidia_flash_tools import vendor_inputs
     if board in release.get('boards', {}) or board in vendor_inputs.BOARDS:
         return vendor_inputs.install(workspace, release, board, Path(__file__).resolve().parent.parent)
@@ -191,7 +191,7 @@ def orin_session(workspace, args, release, *, confirm, select_disk,
     experimental_authorization(args)
     if request_recovery is None:
         raise ValueError('same-board physical recovery callback required before firmware erase')
-    if args.board not in ('orin','orin-nx','recomputer-j40'):
+    if args.board not in ('orin','orin-nx','recomputer-j40','mic-733-ao'):
         raise ValueError('exact Orin reference target required')
     workspace.validate()
     record = release['recovery']['helper']
@@ -211,7 +211,7 @@ def orin_session(workspace, args, release, *, confirm, select_disk,
         confirm_carrier = getattr(args, 'carrier_confirmation', None)
         if not callable(confirm_carrier):
             raise ValueError('board-specific carrier confirmation required')
-        carrier.bind_confirmation(identity, confirm_carrier(identity))
+        carrier.bind_confirmation(identity, confirm_carrier(identity), args.board)
     identity['uefi_policy'] = observation
     factory = transport_factory or usb_transport
     vendor.generate_qspi()
@@ -225,6 +225,13 @@ def orin_session(workspace, args, release, *, confirm, select_disk,
     boot = workspace.tree/'bootloader/boot0.img'
     generated = {'firmware':package,'programmed_plan':vendor.orin_plan,
                  'recovery':vendor.recovery_payload}
+    from nvidia_flash_tools import orin_firmware
+    if args.board in orin_firmware.MEASURE_BEFORE_APPROVAL:
+        # Unmeasured module QSPI: read it now (read-only) so the operator sees it
+        # and an unacceptable value stops before, not after, the approval.
+        geometry = orin_firmware.qspi_geometry(transport)
+        print('QSPI mtd0 measured in RAM recovery: ' + json.dumps(geometry, sort_keys=True))
+        generated['qspi_geometry'] = geometry
     contract,pin = approval_contract(workspace,release,Path(__file__).resolve().parent.parent,
                                      helper,boot,generated,identity,disk)
     if confirm('firmware',contract,pin) != pin:

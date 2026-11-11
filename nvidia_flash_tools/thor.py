@@ -80,21 +80,30 @@ def security_observation(identity):
 def carrier_confirmation(identity):
     """Identity-stage prompt for boards whose carrier has no NVIDIA-format EEPROM."""
     from nvidia_flash_tools import carrier
+    rule = carrier.rule_for(_board_of(identity))
     print(carrier.describe(identity))
-    print('The Seeed J401 carrier has no NVIDIA carrier EEPROM, so the carrier cannot be proven from EEPROM data. '
+    print(rule['no_eeprom'] + ', so the carrier cannot be proven from EEPROM data. '
           'The cvb result above is recorded in, and bound to, the destructive approval.')
-    answer = input('Type ' + carrier.CONFIRMATION + ' only if the unit in front of you is a Seeed reComputer J40/J4012 '
-                   'with its original J401 carrier and you observed its labels: ').strip()
-    if answer != carrier.CONFIRMATION:
+    answer = input('Type ' + rule['confirmation'] + ' only if the unit in front of you is ' + rule['unit'] +
+                   ' and you observed its labels: ').strip()
+    if answer != rule['confirmation']:
         raise ValueError('explicit carrier confirmation declined; no carrier assumed, stop before persistent writes')
     return answer
+
+
+def _board_of(identity):
+    from nvidia_flash_tools import carrier
+    for board, rule in carrier.RULES.items():
+        if identity.get('carrier_rule') == rule['rule']:
+            return board
+    raise ValueError('carrier confirmation requested for an identity without a carrier rule')
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', nargs='?', choices=('check', 'prepare', 'install'), default='install')
     parser.add_argument('--bundle-pin', help='independent operator-provided engineering-manifest SHA256; otherwise prompted')
-    parser.add_argument('--board', choices=('thor','orin','orin-nx','recomputer-j40'), default='thor')
+    parser.add_argument('--board', choices=('thor','orin','orin-nx','recomputer-j40','mic-733-ao'), default='thor')
     args = parser.parse_args(argv)
     board = args.board
     print(board.upper() + ': test-key images; exact reference kit only.')

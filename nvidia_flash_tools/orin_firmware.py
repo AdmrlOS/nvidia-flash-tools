@@ -14,6 +14,17 @@ from nvidia_flash_tools.vendor import qspi_package
 
 CAPACITY = 64 * 1024 * 1024
 EXECUTOR_TIMEOUT = 3600
+# Accepted /sys/class/mtd/mtd0 values. The erase block only has to divide the
+# device (it is erased whole and read back in full): 4 KiB measured on a J4012
+# (Orin NX); 64 KiB is the common NOR block size.
+GEOMETRY = (('size', (str(CAPACITY),)), ('erasesize', ('4096', '65536')), ('type', ('nor',)))
+# Boards whose module QSPI geometry has never been measured on real hardware
+# (AGX Orin P3701-0005 in the MIC-733-AO): the RAM-only recovery reads mtd0 and
+# shows it BEFORE the firmware approval, and an unacceptable value stops there
+# instead of after the operator approved the erase. Remove a board once its
+# first RAM-only probe has recorded the values (keep provision's check).
+MEASURE_BEFORE_APPROVAL = ('mic-733-ao',)
+GEOMETRY_FIELDS = ('name', 'type', 'size', 'erasesize', 'writesize')
 CHUNK = 4 * 1024 * 1024
 # One board-side pass reads and hashes all 16 chunks (mtd_debug + sha256sum).
 HASH_TIMEOUT = 600
@@ -220,6 +231,22 @@ def plan(index, xml, stock, guids=None):
             'index_sha256':hashlib.sha256(Path(index).read_bytes()).hexdigest()}, bytes(expected)
 
 
+def qspi_geometry(transport):
+    """Read-only mtd0 geometry from the RAM recovery (sysfs reads only)."""
+    measured = {name: transport.shell('/bin/cat', '/sys/class/mtd/mtd0/' + name).decode().strip()
+                for name in GEOMETRY_FIELDS}
+    check_geometry(measured)
+    return measured
+
+
+def check_geometry(measured):
+    for name, allowed in GEOMETRY:
+        if measured.get(name) not in allowed:
+            raise ValueError('unexpected Orin SPI geometry/type: ' + name + '=' + str(measured.get(name)) +
+                             ' (accepted: ' + ', '.join(allowed) + ')')
+    return measured
+
+
 def vendor_functions(source):
     """Select exact vendor functions, not its disk-enumerating main program."""
     text = Path(source).read_text()
@@ -288,7 +315,7 @@ def provision(vendor, transport):
     # Validate the one MTD controller BEFORE erase; no eMMC/block operation.
     # Erase block size only has to divide the device: it is erased whole and
     # read back in full. Orin NX/Nano modules use 4 KiB-sector QSPI NOR (J4012).
-    for name, allowed in (('size',(str(CAPACITY),)), ('erasesize',('4096','65536')), ('type',('nor',))):
+    for name, allowed in GEOMETRY:
         actual = transport.shell('/bin/cat', '/sys/class/mtd/mtd0/' + name).decode().strip()
         if actual not in allowed:
             raise ValueError('unexpected Orin SPI geometry/type: ' + name + '=' + actual)

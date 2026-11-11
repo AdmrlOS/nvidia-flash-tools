@@ -155,3 +155,84 @@ patch (`cvb_eeprom_read_size <0x100>` to `<0>`, no fuzz), verifies the patched S
 under `kernel/dtb/`. The workspace graph is resealed, so these bytes are part of every
 later approval. Signing, planning, SPI readback and the NVMe write are unchanged,
 including the `BootOrderNvme.dtbo` overlay.
+
+## Advantech MIC-733-AO {#mic-733-ao}
+
+`orin.py --board mic-733-ao` accepts only an Advantech MIC-733-AO6A1: a
+P3701-0005 (AGX Orin 64GB) module on Advantech's MIC-733 carrier and the image
+named by the `boards.mic-733-ao.image` record (a full-disk image of the shared
+`nvidia-tegra234` target whose boot slots carry the
+`tegra234-mic-733-ao+p3701-0005.dtb` board DTB). Its flash configuration is
+`mic-733-ao-qspi` (installed from the bundle, not an NVIDIA name). Module SKUs
+3701-0000/0004 (32GB), other modules and any NVIDIA carrier are refused, even
+though the flash recipe carries their DTBs: the image boots the 0005 DTB only.
+Security observation and both erase confirmations apply. Recovery USB:
+`0955:7023` (AGX Orin 64GB), entered with the SW_REC1/SW_RST1 buttons; `7020`
+is the booted OS.
+
+```sh
+python3 orin.py check --board mic-733-ao --bundle-pin "$BUNDLE_PIN"
+sudo /usr/bin/python3 orin.py install --board mic-733-ao --bundle-pin "$BUNDLE_PIN"
+```
+
+**Image pin.** The release record pins the final staging lab image's size and
+SHA256 (`admiral-nvidia-tegra234-advantech-mic-733-ao-staging.img`, the shared
+nvidia-tegra234 image with the MIC-733-AO `board.dtb` and staging endpoints).
+A record with `"size": null, "sha256": null` is refused by `check`/`install`
+(`no size/SHA256 pinned`); a new image needs new pins and a bundle rebuild.
+
+### Carrier rule (`mic-733-ao-cvb-v2`)
+
+Advantech's MB2 BCT sets `cvb_eeprom_read_size = 0`: there is no EEPROM at I2C0
+0xac and with NVIDIA's default MB2 busy-spins in "Prepare eeprom data". The rule
+(`nvidia_flash_tools/carrier.py`, `RULES['mic-733-ao']`) works like the J401 rule:
+
+1. The module (`cvm`) decode must equal `3701-0005` exactly; fuse/security checks
+   are those of the NVIDIA kits.
+2. Fuses and module EEPROM are read first, ending with their own recovery reboot.
+   The carrier EEPROM is dumped last by a separate, time-bounded (180 s)
+   `tegraflash` run whose failure is tolerated, then decoded with `chkbdinfo -i/-k`.
+   A dump that does not return within the bound stops the probe. If MB2 answers
+   `Could not read eeprom for module cvb` the applet keeps running and the operator
+   re-enters Force Recovery (hold SW_REC1, press and release SW_RST1, release
+   SW_REC1); the installer then requires the same boot ROM identity.
+3. The result is classified by the outcome table in [the J401 section](#recomputer-j40) and
+   recorded verbatim. Accepted for this board (`MIC733_ACCEPTED`): `dump-failed`
+   only. Refused: every other outcome, including `dump-error`,
+   `unexpected-size`, `blank-zero`, `blank-ff`, `undecodable` and
+   `nvidia-carrier-decoded` (any 4-digit id, including 3737, 3711, 3740).
+4. The operator types `OBSERVED ADVANTECH MIC-733-AO CARRIER` at the identity
+   stage. Evidence and phrase are part of `physical_board` in both approvals; a
+   J401 record or phrase never satisfies this rule.
+
+**Captured.** The first RAM-only probe of a real MIC-733-AO6A1 (R39.2.1) read
+module `3701-0005`, all security/ODM fuse words zero, and the carrier dump ended
+`dump-failed` with MB2's `Could not read eeprom for module cvb` answer; the
+applet stayed running and one SW_REC1 + SW_RST1 re-entry was needed. Rule v1
+accepted four outcomes provisionally; v2 accepts only the captured one. Never
+loosen it from documentation alone.
+
+### QSPI geometry
+
+The installer writes and reads back the whole 64 MiB controller and accepts an
+`mtd0` erase size of 4 KiB (measured on a J4012) or 64 KiB. The AGX Orin
+P3701-0005 module's value has not been measured. For `mic-733-ao` the RAM recovery
+reads `/sys/class/mtd/mtd0/{name,type,size,erasesize,writesize}` read-only before
+the firmware approval, prints them, binds them into both approvals
+(`firmware_package.qspi_geometry`) and stops on an unaccepted value before the
+operator approves anything. Once measured, record the value here.
+
+### Vendor inputs {#mic-733-ao-vendor-inputs}
+
+`vendor-inputs/mic-733-ao/` holds the Admiral BSP's MIC-733-AO flash recipe
+(`staging/bsp-ci` `c2fecbe`, `board/admiral/boards/mic-733-ao/flash/`) and the three
+per-SKU DTBs from the shared `nvidia-tegra234` kernel build at that commit
+(`generic-dtbs`, byte-identical to `images/nvidia/`). Their carrier deltas come
+from Advantech's kernel DTB as published by Avocado Linux
+(`avocado-linux/bsp-mic-733-ao5a1`, `stone/carrier-bsp/tegra234-p3737-0000+p3701-0000-nv-adv.dtb`). After the NVIDIA BSP is extracted into the fresh
+workspace, the installer checks the SHA256 of the NVIDIA files the configuration
+derives from (the BSP `flash-qspi.sh` `NVIDIA_SHA` set), creates the two
+`-mic-733-ao` MB1 files from NVIDIA's a04 pinmux/GPIO files with the pinned patch
+(stock and result SHA256 checked), and installs the MB2 misc BCT, the QSPI and
+recovery configurations and the DTBs. NVIDIA's own files are not modified. ODMDATA
+is `gbe-uphy-config-0,hsstp-lane-map-3,nvhs-uphy-config-0,hsio-uphy-config-16`.

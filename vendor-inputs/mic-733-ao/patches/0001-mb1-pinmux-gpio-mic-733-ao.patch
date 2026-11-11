@@ -1,0 +1,401 @@
+Advantech MIC-733-AO: MB1 boot pinmux and boot GPIO configuration.
+
+Creates tegra234-mb1-bct-gpio-p3701-0000-a04-mic-733-ao.dtsi and
+tegra234-mb1-bct-pinmux-p3701-0000-a04-mic-733-ao.dtsi from NVIDIA R39.2.1's
+tegra234-mb1-bct-{gpio,pinmux}-p3701-0000-a04.dtsi. flash-qspi.sh copies the
+two NVIDIA files to these names (sha256-checked) and applies this patch to the
+copies with `patch -p1` from the root of Linux_for_Tegra; NVIDIA's own files
+are not modified. mic-733-ao-qspi.conf selects the copies.
+
+Source of the changes: Advantech's r36.4.x MB1 files for the MIC-733-AO as
+published by Avocado Linux (avocado-linux/bsp-mic-733-ao5a1,
+stone/carrier-bsp/tegra234-mb1-bct-{pinmux,gpio}-p3701-0000-a04-adv.dtsi).
+Compared semantically (per pin, per property; comments ignored) against
+NVIDIA's stock r36.4.3 files, Advantech changes exactly these pins, and
+NVIDIA R39.2.1 has the r36.4.3 values for all of them (usb_vbus_en1_pz2:
+R39.2.1 already pulls up, like Advantech). Only the changed values are applied;
+NVIDIA's own r36 -> r39 changes (dp_aux_ch1/2/3 and soc_gpio38/40/55 moved
+from the eth functions to rsvd1) are kept as NVIDIA has them.
+
+  pinmux  dp_aux_ch0_hpd_pm0     dp -> rsvd1 (GPIO M.00, HDMI hot-plug)
+          pex_l0_clkreq_n_pk0    rsvd1 -> pe0, un-tristated (PCIe C0)
+          pex_l0_rst_n_pk1       rsvd1 -> pe0, un-tristated, input off
+          pex_l7_clkreq_n_pag0   rsvd1 -> pe7, un-tristated (PCIe C7)
+          pex_l7_rst_n_pag1      rsvd1 -> pe7, un-tristated, input off
+          soc_gpio23_pp4         pull down -> up (TPM present, active low)
+          soc_gpio31_pq4         input enabled, pull none -> down
+          spi1_sck/miso/mosi/cs0/cs1 (pz3-pz7)  rsvd1 -> spi1, un-tristated,
+                                 pull up (sck stays pull down), lpdr dropped
+          spi5_mosi_pac2         input enabled
+          usb_vbus_en0_pz1       driven (un-tristated, input off, 1.8 V)
+          usb_vbus_en1_pz2       driven (un-tristated, input off)
+  gpio    inputs added           M.00 M.03 M.05 M.06 Q.04 AC.02
+          output-high            Z.01 Z.02 N.01 (were inputs)
+          output-low             AON BB.00 (was input); AC.02 removed
+          Q.04 stays in output-low as well: Advantech lists it in both.
+
+Not changed: pad voltage (Advantech's file is byte-identical to NVIDIA
+r36.4.3; NVIDIA R39.2.1 differs only in whitespace and header), UPHY lanes.
+
+Licence: these are NVIDIA BSD-3-Clause files; the NVIDIA notice is retained.
+Avocado publishes Advantech's versions without a LICENSE file; only the pin
+values above, which are hardware facts of the carrier, are taken from them.
+
+--- a/bootloader/tegra234-mb1-bct-gpio-p3701-0000-a04-mic-733-ao.dtsi
++++ b/bootloader/tegra234-mb1-bct-gpio-p3701-0000-a04-mic-733-ao.dtsi
+@@ -31,6 +31,13 @@
+ 
+ #include "tegra234-gpio.h"
+ 
++/*
++ * Advantech MIC-733-AO: NVIDIA R39.2.1 tegra234-mb1-bct-gpio-p3701-0000-a04.dtsi
++ * with Advantech's r36.4.x boot GPIO changes for this carrier (see the patch
++ * header). Q.04 is listed both as input and output-low, exactly as Advantech
++ * ships it.
++ */
++
+ 
+ / {
+ 	gpio@2200000 {
+@@ -42,8 +49,6 @@
+ 				TEGRA234_MAIN_GPIO(B, 0)
+ 				TEGRA234_MAIN_GPIO(Y, 3)
+ 				TEGRA234_MAIN_GPIO(Y, 4)
+-				TEGRA234_MAIN_GPIO(Z, 1)
+-				TEGRA234_MAIN_GPIO(Z, 2)
+ 				TEGRA234_MAIN_GPIO(Z, 3)
+ 				TEGRA234_MAIN_GPIO(Z, 4)
+ 				TEGRA234_MAIN_GPIO(Z, 5)
+@@ -51,11 +56,15 @@
+ 				TEGRA234_MAIN_GPIO(Z, 7)
+ 				TEGRA234_MAIN_GPIO(P, 4)
+ 				TEGRA234_MAIN_GPIO(P, 6)
++				TEGRA234_MAIN_GPIO(Q, 4)
+ 				TEGRA234_MAIN_GPIO(Q, 6)
+ 				TEGRA234_MAIN_GPIO(Q, 7)
+ 				TEGRA234_MAIN_GPIO(R, 1)
++				TEGRA234_MAIN_GPIO(M, 0)
++				TEGRA234_MAIN_GPIO(M, 3)
++				TEGRA234_MAIN_GPIO(M, 5)
++				TEGRA234_MAIN_GPIO(M, 6)
+ 				TEGRA234_MAIN_GPIO(N, 4)
+-				TEGRA234_MAIN_GPIO(N, 1)
+ 				TEGRA234_MAIN_GPIO(G, 0)
+ 				TEGRA234_MAIN_GPIO(G, 1)
+ 				TEGRA234_MAIN_GPIO(G, 2)
+@@ -65,6 +74,7 @@
+ 				TEGRA234_MAIN_GPIO(I, 0)
+ 				TEGRA234_MAIN_GPIO(I, 1)
+ 				TEGRA234_MAIN_GPIO(I, 2)
++				TEGRA234_MAIN_GPIO(AC, 2)
+ 				TEGRA234_MAIN_GPIO(AC, 3)
+ 				TEGRA234_MAIN_GPIO(AC, 4)
+ 				TEGRA234_MAIN_GPIO(AC, 5)
+@@ -98,7 +108,6 @@
+ 				TEGRA234_MAIN_GPIO(I, 5)
+ 				TEGRA234_MAIN_GPIO(AC, 0)
+ 				TEGRA234_MAIN_GPIO(AC, 1)
+-				TEGRA234_MAIN_GPIO(AC, 2)
+ 				TEGRA234_MAIN_GPIO(A, 1)
+ 				TEGRA234_MAIN_GPIO(A, 2)
+ 				>;
+@@ -107,12 +116,15 @@
+ 				TEGRA234_MAIN_GPIO(Y, 1)
+ 				TEGRA234_MAIN_GPIO(Y, 2)
+ 				TEGRA234_MAIN_GPIO(Z, 0)
++				TEGRA234_MAIN_GPIO(Z, 1)
++				TEGRA234_MAIN_GPIO(Z, 2)
+ 				TEGRA234_MAIN_GPIO(Q, 1)
+ 				TEGRA234_MAIN_GPIO(G, 3)
+ 				TEGRA234_MAIN_GPIO(AC, 7)
+ 				TEGRA234_MAIN_GPIO(K, 5)
+ 				TEGRA234_MAIN_GPIO(A, 0)
+ 				TEGRA234_MAIN_GPIO(A, 3)
++				TEGRA234_MAIN_GPIO(N, 1)
+ 				>;
+ 		};
+ 	};
+@@ -134,10 +146,10 @@
+ 				TEGRA234_AON_GPIO(AA, 1)
+ 				TEGRA234_AON_GPIO(AA, 2)
+ 				TEGRA234_AON_GPIO(AA, 3)
+-				TEGRA234_AON_GPIO(BB, 0)
+ 				TEGRA234_AON_GPIO(BB, 1)
+ 				>;
+ 			gpio-output-low = <
++				TEGRA234_AON_GPIO(BB, 0)
+ 				>;
+ 			gpio-output-high = <
+ 				TEGRA234_AON_GPIO(BB, 3)
+--- a/bootloader/generic/BCT/tegra234-mb1-bct-pinmux-p3701-0000-a04-mic-733-ao.dtsi
++++ b/bootloader/generic/BCT/tegra234-mb1-bct-pinmux-p3701-0000-a04-mic-733-ao.dtsi
+@@ -32,7 +32,13 @@
+ /dts-v1/;
+ #include "pinctrl-tegra.h"
+ 
+-#include "tegra234-mb1-bct-gpio-p3701-0000-a04.dtsi"
++/*
++ * Advantech MIC-733-AO: NVIDIA R39.2.1 tegra234-mb1-bct-pinmux-p3701-0000-a04.dtsi
++ * with the pin changes Advantech makes to the r36.4.x file for this carrier
++ * (pins marked "MIC-733-AO" below; see the patch header).
++ */
++
++#include "tegra234-mb1-bct-gpio-p3701-0000-a04-mic-733-ao.dtsi"
+ / {
+ 	pinmux@2430000 {
+ 		pinctrl-names = "default", "drive", "unused";
+@@ -376,9 +382,10 @@
+ 				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
+ 			};
+ 
++			/* MIC-733-AO: HDMI hot-plug read as GPIO M.00 */
+ 			dp_aux_ch0_hpd_pm0 {
+ 				nvidia,pins = "dp_aux_ch0_hpd_pm0";
+-				nvidia,function = "dp";
++				nvidia,function = "rsvd1";
+ 				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
+ 				nvidia,tristate = <TEGRA_PIN_ENABLE>;
+ 				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
+@@ -1031,80 +1038,83 @@
+ 				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
+ 			};
+ 
++			/* MIC-733-AO: USB3C2 top VBUS enable */
+ 			usb_vbus_en0_pz1 {
+ 				nvidia,pins = "usb_vbus_en0_pz1";
+ 				nvidia,function = "rsvd1";
+ 				nvidia,pull = <TEGRA_PIN_PULL_UP>;
+-				nvidia,tristate = <TEGRA_PIN_ENABLE>;
+-				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
+-				nvidia,io-high-voltage = <TEGRA_PIN_ENABLE>;
+-				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
+-			};
+-
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
++				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
++			};
++
++			/* MIC-733-AO: USB3C2 bottom VBUS enable */
+ 			usb_vbus_en1_pz2 {
+ 				nvidia,pins = "usb_vbus_en1_pz2";
+ 				nvidia,function = "rsvd1";
+ 				nvidia,pull = <TEGRA_PIN_PULL_UP>;
+-				nvidia,tristate = <TEGRA_PIN_ENABLE>;
+-				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
+-				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
+-				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
+-			};
+-
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
++				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
++			};
++
++			/* MIC-733-AO: TPM SPI1 SCK */
+ 			spi1_sck_pz3 {
+ 				nvidia,pins = "spi1_sck_pz3";
+-				nvidia,function = "rsvd1";
+-				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
+-				nvidia,tristate = <TEGRA_PIN_ENABLE>;
+-				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
+-				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
+-				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
+-			};
+-
++				nvidia,function = "spi1";
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
++			};
++
++			/* MIC-733-AO: TPM SPI1 MISO */
+ 			spi1_miso_pz4 {
+ 				nvidia,pins = "spi1_miso_pz4";
+-				nvidia,function = "rsvd1";
+-				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
+-				nvidia,tristate = <TEGRA_PIN_ENABLE>;
+-				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
+-				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
+-				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
+-			};
+-
++				nvidia,function = "spi1";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
++			};
++
++			/* MIC-733-AO: TPM SPI1 MOSI */
+ 			spi1_mosi_pz5 {
+ 				nvidia,pins = "spi1_mosi_pz5";
+-				nvidia,function = "rsvd1";
+-				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
+-				nvidia,tristate = <TEGRA_PIN_ENABLE>;
+-				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
+-				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
+-				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
+-			};
+-
++				nvidia,function = "spi1";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
++			};
++
++			/* MIC-733-AO: TPM SPI1 CS0 */
+ 			spi1_cs0_pz6 {
+ 				nvidia,pins = "spi1_cs0_pz6";
+-				nvidia,function = "rsvd1";
+-				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
+-				nvidia,tristate = <TEGRA_PIN_ENABLE>;
+-				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
+-				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
+-				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
+-			};
+-
++				nvidia,function = "spi1";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
++			};
++
++			/* MIC-733-AO: TPM SPI1 CS1 */
+ 			spi1_cs1_pz7 {
+ 				nvidia,pins = "spi1_cs1_pz7";
+-				nvidia,function = "rsvd1";
+-				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
+-				nvidia,tristate = <TEGRA_PIN_ENABLE>;
+-				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
+-				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
+-				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
+-			};
+-
++				nvidia,function = "spi1";
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
++			};
++
++			/* MIC-733-AO: TPM module present, input, active low */
+ 			soc_gpio23_pp4 {
+ 				nvidia,pins = "soc_gpio23_pp4";
+ 				nvidia,function = "vi0";
+-				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,pull = <TEGRA_PIN_PULL_UP>;
+ 				nvidia,tristate = <TEGRA_PIN_ENABLE>;
+ 				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
+ 				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
+@@ -1131,12 +1141,13 @@
+ 				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
+ 			};
+ 
++			/* MIC-733-AO */
+ 			soc_gpio31_pq4 {
+ 				nvidia,pins = "soc_gpio31_pq4";
+ 				nvidia,function = "rsvd0";
+-				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
+-				nvidia,tristate = <TEGRA_PIN_DISABLE>;
+-				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++				nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
+ 				nvidia,io-high-voltage = <TEGRA_PIN_DISABLE>;
+ 				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
+ 			};
+@@ -1362,12 +1373,13 @@
+ 				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
+ 			};
+ 
++			/* MIC-733-AO */
+ 			spi5_mosi_pac2 {
+ 				nvidia,pins = "spi5_mosi_pac2";
+ 				nvidia,function = "rsvd3";
+ 				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
+ 				nvidia,tristate = <TEGRA_PIN_DISABLE>;
+-				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
+ 				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
+ 			};
+ 
+@@ -1423,22 +1435,24 @@
+ 				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
+ 			};
+ 
++			/* MIC-733-AO: PCIe C0 (mini-PCIe) */
+ 			pex_l0_clkreq_n_pk0 {
+ 				nvidia,pins = "pex_l0_clkreq_n_pk0";
+-				nvidia,function = "rsvd1";
+-				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
+-				nvidia,tristate = <TEGRA_PIN_ENABLE>;
+-				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
+-				nvidia,io-high-voltage = <TEGRA_PIN_ENABLE>;
+-				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
+-			};
+-
++				nvidia,function = "pe0";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_ENABLE>;
++				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
++			};
++
++			/* MIC-733-AO: PCIe C0 (mini-PCIe) */
+ 			pex_l0_rst_n_pk1 {
+ 				nvidia,pins = "pex_l0_rst_n_pk1";
+-				nvidia,function = "rsvd1";
+-				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
+-				nvidia,tristate = <TEGRA_PIN_ENABLE>;
+-				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,function = "pe0";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
+ 				nvidia,io-high-voltage = <TEGRA_PIN_ENABLE>;
+ 				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
+ 			};
+@@ -1503,22 +1517,24 @@
+ 				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
+ 			};
+ 
++			/* MIC-733-AO: PCIe C7 (Ethernet) */
+ 			pex_l7_clkreq_n_pag0 {
+ 				nvidia,pins = "pex_l7_clkreq_n_pag0";
+-				nvidia,function = "rsvd1";
+-				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
+-				nvidia,tristate = <TEGRA_PIN_ENABLE>;
+-				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
+-				nvidia,io-high-voltage = <TEGRA_PIN_ENABLE>;
+-				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
+-			};
+-
++				nvidia,function = "pe7";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,io-high-voltage = <TEGRA_PIN_ENABLE>;
++				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
++			};
++
++			/* MIC-733-AO: PCIe C7 (Ethernet) */
+ 			pex_l7_rst_n_pag1 {
+ 				nvidia,pins = "pex_l7_rst_n_pag1";
+-				nvidia,function = "rsvd1";
+-				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
+-				nvidia,tristate = <TEGRA_PIN_ENABLE>;
+-				nvidia,enable-input = <TEGRA_PIN_ENABLE>;
++				nvidia,function = "pe7";
++				nvidia,pull = <TEGRA_PIN_PULL_NONE>;
++				nvidia,tristate = <TEGRA_PIN_DISABLE>;
++				nvidia,enable-input = <TEGRA_PIN_DISABLE>;
+ 				nvidia,io-high-voltage = <TEGRA_PIN_ENABLE>;
+ 				nvidia,lpdr = <TEGRA_PIN_DISABLE>;
+ 			};

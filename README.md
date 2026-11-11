@@ -1,8 +1,8 @@
 # NVIDIA flash tools
 
 Install an Admiral disk image on a **Jetson AGX Thor**, **Jetson AGX Orin**,
-Orin NX reference kit or **Seeed reComputer J4012** using the pinned NVIDIA
-Jetson Linux 39.2.1 recovery tools.
+Orin NX reference kit, **Seeed reComputer J4012** or **Advantech MIC-733-AO**
+using the pinned NVIDIA Jetson Linux 39.2.1 recovery tools.
 
 **Back up first: installation replaces QSPI boot firmware and erases the entire
 selected NVMe.** Keep stable power and disable host sleep. Secure Boot must already be disabled; the installer
@@ -180,11 +180,82 @@ and stops before RAM boot, any erase or any write.
 
 Seeed: [reComputer J4012 flash guide](https://wiki.seeedstudio.com/reComputer_J4012_Flash_Jetpack/).
 
+## 2D. Install on Advantech MIC-733-AO
+
+Only an **Advantech MIC-733-AO6A1** (Jetson AGX Orin 64GB, module **P3701-0005**)
+on Advantech's own MIC-733 carrier, image
+`admiral-nvidia-tegra234-advantech-mic-733-ao-staging.img` matching this bundle's
+`boards.mic-733-ao.image` record (the image boots the P3701-0005 device tree).
+Other module SKUs (including the 32GB MIC-733-AO5A1) and any NVIDIA carrier are
+refused. This programs the 64 MiB QSPI with the MIC-733-AO boot firmware
+(Advantech's MB1 pinmux/GPIO changes, the MB2 BCT with the carrier-EEPROM read
+disabled, the carrier UPHY mapping in ODMDATA and the MIC-733-AO device trees;
+all pinned in `vendor-inputs/mic-733-ao/`) and the whole NVMe. The eMMC, which
+holds the stock Advantech OS, is not written, but once QSPI holds the R39.2.1
+firmware that stock (L4T R36) OS no longer boots; reflash it with Advantech's
+tools to go back.
+
+The MIC-733 carrier has no NVIDIA-format carrier EEPROM, so the carrier cannot be
+proven from EEPROM data. The module (`3701-0005`), fuses and Secure Boot checks
+are as strict as for NVIDIA kits. The carrier EEPROM result is recorded in the
+approval and must not decode as any NVIDIA carrier (3737, 3711, 3740 ...); you also
+type a confirmation that you observed the Advantech unit
+([rule](docs/reference.md#mic-733-ao)).
+
+1. On the existing unit, personally observe **Secure Boot Disabled** in UEFI
+   setup (Device Manager > Secure Boot Configuration) or `mokutil --sb-state` on
+   the stock OS. Shut down before fitting/changing the NVMe (M.2 2280 Key M).
+2. On the Ubuntu host:
+
+   ```sh
+   python3 orin.py check --board mic-733-ao --bundle-pin "$BUNDLE_PIN"
+   ```
+
+   Enter the image's absolute path. Expect `Admiral image: full SHA256, both GPTs
+   and partition fingerprint verified.` Resolve host prerequisites using the
+   printed apt command after reviewing it, then repeat the check.
+3. Connect the host's USB data cable to the MIC-733-AO's **recovery (device-mode)
+   USB port** (see Advantech's MIC-733-AO user manual for its position) and keep
+   the unit's power supply connected.
+4. Enter Force Recovery with the two buttons: with the unit powered,
+   **hold the recovery button SW_REC1, press and release the reset button
+   SW_RST1, then release SW_REC1**.
+5. Confirm exactly one NVIDIA/APX endpoint; disconnect other NVIDIA USB devices:
+
+   ```sh
+   lsusb -d 0955:
+   ```
+
+   Expect `0955:7023` (AGX Orin 64GB in Force Recovery). `0955:7020` means the
+   stock OS booted instead: repeat step 4. Whenever the installer asks you to
+   re-enter Force Recovery, repeat step 4 and press Enter; the installer then waits
+   for the board to enumerate again on the same USB port. Expect up to two
+   re-entries: one after the carrier check (if NVIDIA's tool leaves its flashing
+   applet running after that read, as on other carriers without the EEPROM) and
+   one after the firmware stage.
+6. Start installation with the explicit selector:
+
+   ```sh
+   sudo /usr/bin/python3 orin.py install --board mic-733-ao --bundle-pin "$BUNDLE_PIN"
+   ```
+
+7. Follow [the prompts below](#3-answer-the-installation-prompts), including the
+   extra carrier confirmation (`OBSERVED ADVANTECH MIC-733-AO CARRIER`, typed only
+   after reviewing the printed carrier evidence), keeping the same unit/NVMe connected.
+   Before the firmware approval the tool also prints the QSPI geometry it measured
+   in RAM recovery (`QSPI mtd0 measured in RAM recovery: ...`).
+8. After completion, [verify first boot](#4-boot-and-check).
+
+To capture only the carrier evidence on first contact, answer anything else at the
+carrier confirmation prompt: the tool has then done only RAM-only fuse/EEPROM reads
+and stops before RAM boot, any erase or any write.
+
 ## 3. Answer the installation prompts
 
 1. Type `I ACCEPT THE RISKS` to continue; this does not authorize an erase.
 2. Choose a **new** session directory, e.g.
-   `/opt/nvidia-flash-tools/session-thor-1`, `session-orin-1` or `session-j40-1`. It must not exist.
+   `/opt/nvidia-flash-tools/session-thor-1`, `session-orin-1`, `session-j40-1` or
+   `session-mic733-1`. It must not exist.
 3. Choose a download cache, e.g. `/opt/nvidia-flash-tools/downloads`. Read NVIDIA's
    terms and type `I ACCEPT NVIDIA LICENSE` if accepted. The installer downloads
    and authenticates the pinned BSP/rootfs; cached files are checked too.
@@ -200,6 +271,9 @@ Seeed: [reComputer J4012 flash guide](https://wiki.seeedstudio.com/reComputer_J4
    `OBSERVED SEEED RECOMPUTER J401 CARRIER` only if the unit in front of you is a
    Seeed reComputer J40/J4012 with its original carrier; anything else aborts. The
    evidence and this confirmation are part of the approval you review next.
+   **Advantech MIC-733-AO only:** the same carrier evidence is printed; type
+   `OBSERVED ADVANTECH MIC-733-AO CARRIER` only if the unit in front of you is an
+   Advantech MIC-733-AO with its original carrier.
 7. Review the displayed board, NVMe serial/capacity and approval. Type
    `ERASE FIRMWARE AND NVME EXPERIMENTAL` only for that hardware.
 8. Reenter Force Recovery when requested; leave power and USB connected.

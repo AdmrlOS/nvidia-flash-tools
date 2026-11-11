@@ -17,19 +17,25 @@ import xml.etree.ElementTree as ET
 
 from nvidia_flash_tools.image import sha256
 
-# board -> (module, sku, carrier, carrier_sku, chip). recomputer-j40 has no
-# NVIDIA carrier ID: its carrier fields are not matched against any EEPROM
-# decode; nvidia_flash_tools.carrier owns that rule.
+# board -> (module, sku, carrier, carrier_sku, chip). recomputer-j40 and
+# mic-733-ao have no NVIDIA carrier ID: their carrier fields are not matched
+# against any EEPROM decode; nvidia_flash_tools.carrier owns those rules.
+# mic-733-ao: the MIC-733-AO6A1 module P3701-0005 (AGX Orin 64GB) only. The
+# BSP recipe also builds 0000/0004 DTBs, but the Admiral image boots the 0005
+# DTB, so other SKUs are refused here (a 32GB unit needs another image).
 BOARDS = {'thor': ('3834', '0008', '4071', '0000', '26'),
           'orin': ('3701', '0000', '3737', '0000', '23'),
           'orin-nx': ('3767', '0000', '3768', '0000', '23'),
-          'recomputer-j40': ('3767', '0000', 'seeed', 'j401', '23')}
+          'recomputer-j40': ('3767', '0000', 'seeed', 'j401', '23'),
+          'mic-733-ao': ('3701', '0005', 'advantech', 'mic-733', '23')}
 # NVIDIA flash.sh board configuration per board; anything absent is jetson-agx-<board>-devkit.
 ALIASES = {'orin-nx': 'jetson-orin-nano-devkit-super',
-           'recomputer-j40': 'recomputer-j40-qspi'}
+           'recomputer-j40': 'recomputer-j40-qspi',
+           'mic-733-ao': 'mic-733-ao-qspi'}
 # Boards whose flash configuration disables recovery.img (every *-qspi.conf)
 # build the RAM-boot recovery image with a pinned recovery variant.
-RECOVERY_ALIASES = {'recomputer-j40': 'recomputer-j40-recovery'}
+RECOVERY_ALIASES = {'recomputer-j40': 'recomputer-j40-recovery',
+                    'mic-733-ao': 'mic-733-ao-recovery'}
 
 
 def clean_env():
@@ -137,8 +143,8 @@ class Vendor:
         self.tree, self.board, self.port = Path(tree).resolve(), board, port
         self.alias = ALIASES.get(board) or 'jetson-agx-' + board + '-devkit'
         self.recovery_alias = RECOVERY_ALIASES.get(board, self.alias)
-        # J401: called after a failed carrier EEPROM read to have the operator
-        # power-cycle the unit back into boot ROM recovery.
+        # J401/MIC-733: called after a failed carrier EEPROM read to have the
+        # operator bring the unit back into boot ROM recovery.
         self.carrier_power_cycle = None
         self.cvb_dump = None
         # Signed SPI graph that plan() approved; generate_qspi snapshots it live.
@@ -218,7 +224,13 @@ class Vendor:
                 return
             sleep(0.5)
         raise ValueError('no fresh Force Recovery enumeration on port ' + self.port +
-                         ': power-cycle the unit with the jumper fitted, then start again')
+                         ': ' + self.reentry_hint() + ', then start again')
+
+    def reentry_hint(self):
+        from nvidia_flash_tools import carrier
+        if self.board in carrier.RULES:
+            return carrier.RULES[self.board]['reenter']
+        return 'power-cycle the unit with the jumper fitted'
 
     def uid(self):
         self.single_rcm()
@@ -257,13 +269,14 @@ class Vendor:
         if self.board in carrier_rule.BOARDS:
             # Module identity is exactly as strict as orin-nx. The carrier has no
             # NVIDIA-format EEPROM: its cvb result is recorded and table-checked.
+            rule = carrier_rule.rule_for(self.board)
             if (decode('-i', 'cvm.bin'), decode('-k', 'cvm.bin')) != (module, sku):
                 raise ValueError('module/SKU/carrier not allowlisted')
             prior = getattr(self, 'carrier_record', None)
             record = copy.deepcopy(prior) if prior is not None else self.cvb_evidence(bl, eeproms)
-            carrier_rule.check_evidence(record)
-            identity.update({'module': module + '-' + sku, 'carrier': carrier_rule.CARRIER,
-                             'carrier_rule': carrier_rule.RULE, 'carrier_evidence': record,
+            carrier_rule.check_evidence(record, self.board)
+            identity.update({'module': module + '-' + sku, 'carrier': rule['carrier'],
+                             'carrier_rule': rule['rule'], 'carrier_evidence': record,
                              'fab': decode('-f', 'cvm.bin'), 'revision': decode('-r', 'cvm.bin'),
                              'cvm_sha256': sha256(bl / eeproms['cvm.bin']),
                              'cvb_sha256': record['cvb_sha256']})
@@ -271,11 +284,11 @@ class Vendor:
                 # MB2 refuses the J401 cvb read and tegraflash stops before its
                 # recovery reboot. Each tegraflash run deletes its private session
                 # state, so no later run can reset the applet: only a power cycle
+                # (J401) or a recovery reset (MIC-733: SW_REC1 + SW_RST1)
                 # restores the boot ROM.
                 if not callable(self.carrier_power_cycle):
-                    raise ValueError('J401 carrier read left the MB2 applet running; power cycle required')
-                print('The J401 has no NVIDIA carrier EEPROM; that read leaves NVIDIA\'s flashing applet running. '
-                      'Power-cycle the unit with the Force Recovery jumper still fitted.')
+                    raise ValueError(rule['label'] + ' carrier read left the MB2 applet running; power cycle required')
+                print(rule['power_cycle'])
                 before = self.usb_devnum()
                 self.carrier_power_cycle(dict(identity))
                 self.await_reenumeration(before)
@@ -297,7 +310,7 @@ class Vendor:
         return identity
 
     def cvb_evidence(self, bl, eeproms):
-        """Record the J401 cvb dump verbatim: sha256 + decode results or the exact failure."""
+        """Record the carrier cvb dump verbatim: sha256 + decode results or the exact failure."""
         import stat
         from nvidia_flash_tools import carrier as carrier_rule
         dump = self.cvb_dump
@@ -318,7 +331,7 @@ class Vendor:
             for flag in ('-i', '-k'):
                 decoders[flag] = self.run_tolerated(['./chkbdinfo', flag, name], cwd=bl, timeout=10)
         return carrier_rule.evidence(dump_returncode=dump['returncode'], dump_output=dump['output'],
-                                     data=data, sha256=digest, size=size, decoders=decoders)
+                                     data=data, sha256=digest, size=size, decoders=decoders, board=self.board)
 
     def generate_qspi(self):
         if self.board != 'thor':

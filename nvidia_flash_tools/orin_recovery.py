@@ -73,6 +73,11 @@ def _fresh_eeproms_unverified_carrier(vendor, bl, argv, index, fuses, outputs):
     reboot; the carrier dump runs last, and its failure is recorded verbatim.
     Vendor.probe then has the operator power-cycle back into recovery. Only the
     first probe of a session dumps the carrier (see Vendor.carrier_record).
+
+    The Advantech MIC-733 carrier has no NVIDIA carrier EEPROM either; what its
+    RAM applet answers is not captured yet (boot MB2 spins in "Prepare eeprom
+    data" without Advantech's MB2 change). Its dump is time-bounded
+    (carrier.MIC733_CVB_TIMEOUT): a dump that never returns stops the probe.
     """
     import stat
     module = list(argv)
@@ -87,9 +92,18 @@ def _fresh_eeproms_unverified_carrier(vendor, bl, argv, index, fuses, outputs):
         # and operator-confirmed by the first probe. Repeating it only re-leaves the
         # applet running (one more power cycle); fuses, cvm and UID stay fresh.
         return outputs
+    from nvidia_flash_tools import carrier as carrier_rule
+    rule = carrier_rule.rule_for(vendor.board)
     carrier = list(argv)
     carrier[index] = 'dump eeprom cvb '+outputs['cvb.bin']+'; reboot recovery'
-    returncode, output = vendor.run_tolerated(['/usr/bin/python3',*carrier],cwd=bl)
+    import subprocess
+    try:
+        returncode, output = vendor.run_tolerated(['/usr/bin/python3',*carrier],cwd=bl,
+                                                  **({'timeout':rule['cvb_timeout']} if rule['cvb_timeout'] else {}))
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError(rule['label'] + ' carrier EEPROM dump did not return within %d s (the MB2 applet may be '
+                         'spinning on the absent carrier EEPROM); stop, %s, and report this output' %
+                         (rule['cvb_timeout'], rule['reenter'])) from exc
     vendor.cvb_dump = {'returncode':returncode, 'output':output}
     cvb = bl/outputs['cvb.bin']
     if returncode and (cvb.exists() or cvb.is_symlink()):

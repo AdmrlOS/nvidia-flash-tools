@@ -84,6 +84,10 @@ def prerequisites():
 
 
 def check_artifact(path, record):
+    if not isinstance(record.get("size"), int) or not re.fullmatch(r"[0-9a-f]{64}", str(record.get("sha256"))):
+        # A release record whose bytes are not pinned yet (image placeholder).
+        raise ValueError("no size/SHA256 pinned for " + str(record.get("name")) +
+                         " in this bundle; use a bundle that pins the final image")
     if not path.is_file() or path.is_symlink():
         raise ValueError("artifact must be a regular, non-symlink file: " + str(path))
     if path.stat().st_size != record["size"] or sha256(path) != record["sha256"]:
@@ -97,7 +101,7 @@ def main():
     p.add_argument("--manifest-sha256", required=True, help="obtain independently from release operator")
     p.add_argument("--signature", type=Path)
     p.add_argument("--public-key", type=Path)
-    p.add_argument("--board", required=True, choices=("thor", "orin", "orin-nx", "recomputer-j40"))
+    p.add_argument("--board", required=True, choices=("thor", "orin", "orin-nx", "recomputer-j40", "mic-733-ao"))
     p.add_argument("--image", type=Path)
     p.add_argument("--download-dir", type=Path)
     p.add_argument("--download", action="store_true", help="prepare: fetch pinned NVIDIA inputs after consent")

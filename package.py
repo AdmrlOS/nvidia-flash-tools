@@ -22,6 +22,13 @@ FILES = tuple(sorted(("LICENSE OPENSSL-LICENSE.txt MUSL-COPYRIGHT.txt README.md 
         'dtb/tegra234-j401-p3768-0000+p3767-0003-recomputer.dtb',
         'dtb/tegra234-j401-p3768-0000+p3767-0004-recomputer.dtb',
         'dtbo/tegra234-p3767-camera-p3768-imx219-dual-seeed.dtbo')] +
+    ['vendor-inputs/mic-733-ao/' + name for name in (
+        'README.md', 'mic-733-ao-qspi.conf', 'mic-733-ao-recovery.conf', 'sample-rootfs-members.txt',
+        'bct/tegra234-mb2-bct-misc-p3701-0000-mic-733-ao.dts',
+        'patches/0001-mb1-pinmux-gpio-mic-733-ao.patch',
+        'dtb/tegra234-mic-733-ao+p3701-0000.dtb',
+        'dtb/tegra234-mic-733-ao+p3701-0004.dtb',
+        'dtb/tegra234-mic-733-ao+p3701-0005.dtb')] +
     ['nvidia_flash_tools/' + name + '.py' for name in (
         '__init__', 'adb_socket', 'download', 'fingerprint', 'firmware', 'firmware_guard',
         'carrier', 'flow', 'image', 'install', 'native_session', 'orin', 'orin_firmware', 'orin_payload',
@@ -31,7 +38,7 @@ FILES = tuple(sorted(("LICENSE OPENSSL-LICENSE.txt MUSL-COPYRIGHT.txt README.md 
         'test_security', 'test_execution', 'test_binary_transport', 'test_firmware',
         'test_download', 'test_namespace', 'test_adb_v2', 'test_guided', 'test_orin_payload',
         'test_orin_probe', 'test_orin_flow', 'test_orin_oracle', 'test_orin_signed_cfg',
-        'test_orin', 'test_orin_j40', 'test_layout')]))
+        'test_orin', 'test_orin_j40', 'test_orin_mic733', 'test_layout')]))
 
 def sha(data):
     return hashlib.sha256(data).hexdigest()

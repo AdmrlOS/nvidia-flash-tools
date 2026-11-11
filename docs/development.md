@@ -10,7 +10,8 @@ tests/                       offline tests and fixture helpers
 docs/                        usage references, included in the bundle
 recovery-io.c, *.c, *.sh      native helper, fixtures and recovery script
 release.json                 pinned vendor inputs and board image records
-vendor-inputs/               pinned Admiral-BSP inputs for recomputer-j40 (see its README)
+vendor-inputs/               pinned Admiral-BSP inputs for recomputer-j40 and mic-733-ao (see their READMEs)
+scripts/                     developer tools, not packaged (pin-mic733-inputs.py refreshes release.json pins)
 ```
 
 Use package imports such as `from nvidia_flash_tools.image import ...`.

@@ -138,6 +138,101 @@
           }
         ]
       }
+    },
+    "mic-733-ao": {
+      "module": "3701-0005",
+      "carrier": "advantech-mic-733",
+      "carrier_rule": "mic-733-ao-cvb-v2",
+      "vendor_board": "mic-733-ao-qspi",
+      "image": {
+        "name": "admiral-nvidia-tegra234-advantech-mic-733-ao-staging.img",
+        "size": 3699412992,
+        "sha256": "046db57bb105f7c2d9b79aa58bc3459174d8247c20327cad624883633cdf657f"
+      },
+      "download_url": null,
+      "vendor_inputs": {
+        "source": {
+          "repository": "admiral-bsp",
+          "branch": "staging/bsp-ci",
+          "commits": [
+            "c2fecbed51a01be0d39611fd255c2dc1b7e9117d"
+          ],
+          "path": "board/admiral/boards/mic-733-ao/flash",
+          "flash_tree": "23dae5d0713b4355257e051a4637bbb19ed3b6f2",
+          "dtb_origin": "nvidia-tegra234 kernel build generic-dtbs at that commit (BUILD_ID base-1.2.0-20261111032844-0155f83)",
+          "carrier_source": "Advantech kernel DTB as published by Avocado Linux: avocado-linux/bsp-mic-733-ao5a1 stone/carrier-bsp/tegra234-p3737-0000+p3701-0000-nv-adv.dtb (git blob 399400c01989d591a91777433dd2edfa6c49c98c)"
+        },
+        "config": {
+          "path": "vendor-inputs/mic-733-ao/mic-733-ao-qspi.conf",
+          "size": 2758,
+          "sha256": "cc04630fcadf040e03285bdcd1787aa25afb33e03765ff4b01a503f5de16ddb0",
+          "install": "mic-733-ao-qspi.conf"
+        },
+        "recovery_config": {
+          "path": "vendor-inputs/mic-733-ao/mic-733-ao-recovery.conf",
+          "size": 420,
+          "sha256": "935506776e8071dcb8baef565c7e8b96a729245a1c3df82e50b68c6ab9298e20",
+          "install": "mic-733-ao-recovery.conf"
+        },
+        "sample_rootfs_members": {
+          "path": "vendor-inputs/mic-733-ao/sample-rootfs-members.txt",
+          "size": 215666,
+          "sha256": "66b68e2eca94c704e1f083c4bb09167bdb927f493252f42f297d2136fcd5448e"
+        },
+        "mb2_bct": {
+          "path": "vendor-inputs/mic-733-ao/bct/tegra234-mb2-bct-misc-p3701-0000-mic-733-ao.dts",
+          "size": 2404,
+          "sha256": "8127b0a6754e9f8340a9e09186a1836e0621d02b4f86bbd18c0db397978ba240",
+          "install": "bootloader/generic/BCT/tegra234-mb2-bct-misc-p3701-0000-mic-733-ao.dts"
+        },
+        "mb1_patch": {
+          "patch": {
+            "path": "vendor-inputs/mic-733-ao/patches/0001-mb1-pinmux-gpio-mic-733-ao.patch",
+            "size": 13945,
+            "sha256": "e4788f9843af934320b749a781ab1fe666e85eb25ceda285ca24a2c332efcce9"
+          },
+          "files": [
+            {
+              "source": "bootloader/tegra234-mb1-bct-gpio-p3701-0000-a04.dtsi",
+              "target": "bootloader/tegra234-mb1-bct-gpio-p3701-0000-a04-mic-733-ao.dtsi",
+              "stock_sha256": "72fc98795c84e11341a2225cd36b443b3afd2cdd161a4a7444daa04b9f1d6b10",
+              "patched_sha256": "f1c3310a5982b332521c86719f8a88dd0260f321a6d85e5d5b4d1be9dd00c1a2"
+            },
+            {
+              "source": "bootloader/generic/BCT/tegra234-mb1-bct-pinmux-p3701-0000-a04.dtsi",
+              "target": "bootloader/generic/BCT/tegra234-mb1-bct-pinmux-p3701-0000-a04-mic-733-ao.dtsi",
+              "stock_sha256": "422f9521ab67429a799be30817bc6e8f6c361fa477df0efdc349dd7720bfc43c",
+              "patched_sha256": "a6314888f78778cff13ca4c6a9d85d79cc27736a0289755ac2ab8dda53a29adb"
+            }
+          ]
+        },
+        "nvidia_sha256": {
+          "p3737-0000-p3701-0000.conf": "f29bd15a7de039eda68bc3955d8d002189fb4929ae9f8ace9d396960c39e9e45",
+          "p3701.conf.common": "33e7d456ec9983571d03741e40e176bf394ea3767892a84f1855e076edc3cd68",
+          "bootloader/generic/BCT/tegra234-mb1-bct-padvoltage-p3701-0000-a04.dtsi": "32fb380fb44c0dbeb71ccd6e97b6b927ca6983025c8df3dcc3ac3c26a54c7a8c",
+          "bootloader/tegra234-mb2-bct-common.dtsi": "42572d28b0dec865e9e0db3a6c04c03e77dd1c06fce80d76f45c3a12f2ed096b"
+        },
+        "dtbs": [
+          {
+            "path": "vendor-inputs/mic-733-ao/dtb/tegra234-mic-733-ao+p3701-0000.dtb",
+            "size": 220401,
+            "sha256": "2dcba6e853e345f0695db03d87661b3cff9b45a02da0de63c5f0d5f097ef0992",
+            "install": "kernel/dtb/tegra234-mic-733-ao+p3701-0000.dtb"
+          },
+          {
+            "path": "vendor-inputs/mic-733-ao/dtb/tegra234-mic-733-ao+p3701-0004.dtb",
+            "size": 220389,
+            "sha256": "caef145ff801a53b0baff68c0b0f8c8cccf7dc7edb9380a20c6d3ff1e308100e",
+            "install": "kernel/dtb/tegra234-mic-733-ao+p3701-0004.dtb"
+          },
+          {
+            "path": "vendor-inputs/mic-733-ao/dtb/tegra234-mic-733-ao+p3701-0005.dtb",
+            "size": 220401,
+            "sha256": "04459652db9f00517a068ab3d8490952103e8d9725e25f604ef3406217d43065",
+            "install": "kernel/dtb/tegra234-mic-733-ao+p3701-0005.dtb"
+          }
+        ]
+      }
     }
   }
 }
